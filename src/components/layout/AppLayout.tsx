@@ -14,6 +14,7 @@ import { PlaceholderView } from '../common/PlaceholderView';
 import { DailyReportManager } from '../daily-reports/DailyReportManager';
 import { SupabaseConfigModal } from '../config/SupabaseConfigModal';
 import { SecurityView } from '../account/SecurityView';
+import { KpiFoundationLayout } from '../kpis/KpiFoundationLayout';
 import { useAuth } from '../../context/AuthContext';
 
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
@@ -51,7 +52,7 @@ export const AppLayout: React.FC = () => {
     return false;
   });
 
-  const { isAdmin, refreshProfile } = useAuth();
+  const { isAdmin, systemRole, refreshProfile } = useAuth();
 
   // Listen to window hash changes
   useEffect(() => {
@@ -60,7 +61,7 @@ export const AppLayout: React.FC = () => {
       if (hash === 'metrics' || hash === 'metric') setActiveTab('metrics');
       else if (hash === 'admin' || hash === 'admin/metrics' || hash.startsWith('admin/')) setActiveTab('admin');
       else if (hash === 'tasks' || hash.startsWith('tasks/') || hash.startsWith('tasks?')) setActiveTab('tasks');
-      else if (hash === 'kpis') setActiveTab('kpis');
+      else if (hash === 'kpis' || hash.startsWith('kpis/')) setActiveTab('kpis');
       else if (hash === 'reports') setActiveTab('reports');
       else if (hash.startsWith('daily-reports')) setActiveTab('daily-reports');
       else if (hash === 'account/security') setActiveTab('account/security');
@@ -133,6 +134,12 @@ export const AppLayout: React.FC = () => {
               <TaskList />
             ) : safeTab === 'metrics' ? (
               <MetricEntryView />
+            ) : safeTab === 'kpis' ? (
+              systemRole === 'staff' ? (
+                <PlaceholderView tab="kpis" onNavigateTab={handleSelectTab} />
+              ) : (
+                <KpiFoundationLayout />
+              )
             ) : safeTab === 'daily-reports' ? (
               <DailyReportManager />
             ) : safeTab === 'account/security' ? (
