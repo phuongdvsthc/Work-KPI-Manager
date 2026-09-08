@@ -16,9 +16,16 @@ import {
   Clock, 
   Info,
   CheckCircle2
+, Calculator
 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { kpiAssignmentService } from '../../../services/kpi-assignment.service';
+import { kpiActualService, KpiActualResolverResult } from '../../../services/kpiActualService';
+import { kpiScoringService, KpiScoringResult, KpiAssignmentScoreResult } from '../../../services/kpiScoringService';
+import { KpiScoreTraceDrawer } from './KpiScoreTraceDrawer';
+import { formatPercent, formatScore, formatScoreStatus } from '../../../utils/kpiScoreFormatter';
+import { KpiManualActualModal } from './KpiManualActualModal';
+import { KpiActualTraceDrawer } from './KpiActualTraceDrawer';
 import { 
   KpiAssignment, 
   KpiAssignmentItem, 
@@ -42,6 +49,10 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
 
   const [assignment, setAssignment] = useState<KpiAssignment | null>(null);
   const [items, setItems] = useState<KpiAssignmentItem[]>([]);
+  const [actuals, setActuals] = useState<Record<string, KpiActualResolverResult>>({});
+  const [assignmentScore, setAssignmentScore] = useState<KpiAssignmentScoreResult | null>(null);
+  const [itemScores, setItemScores] = useState<Record<string, KpiScoringResult>>({});
+  const [scoreTraceItemId, setScoreTraceItemId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -53,6 +64,15 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState<boolean>(false);
   const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  
+  const [manualActualModal, setManualActualModal] = useState<{
+    isOpen: boolean;
+    bindingId: string;
+    measurementType: string;
+    requireNote: boolean;
+  } | null>(null);
+
+  const [traceDrawerItemId, setTraceDrawerItemId] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
@@ -62,9 +82,11 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
     setLoading(true);
     setError(null);
     try {
-      const [detailRes, itemsRes] = await Promise.all([
+      const [detailRes, itemsRes, actualsRes, scoreRes] = await Promise.all([
         kpiAssignmentService.getAssignmentDetail(assignmentId),
         kpiAssignmentService.getAssignmentItems(assignmentId),
+        kpiActualService.resolveAssignmentActuals(assignmentId),
+        kpiScoringService.resolveAssignmentScore(assignmentId)
       ]);
 
       if (detailRes.error) throw detailRes.error;
@@ -72,6 +94,22 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
 
       setAssignment(detailRes.data);
       setItems(itemsRes.data || []);
+      
+      if (actualsRes.data) {
+        const actualsMap = actualsRes.data.reduce((acc, curr) => {
+          acc[curr.assignment_item_id] = curr;
+          return acc;
+        }, {} as Record<string, KpiActualResolverResult>);
+        setActuals(actualsMap);
+      }
+      if (scoreRes.data) {
+        setAssignmentScore(scoreRes.data);
+        const sMap = scoreRes.data.items.reduce((acc, curr) => {
+          acc[curr.assignment_item_id] = curr;
+          return acc;
+        }, {} as Record<string, KpiScoringResult>);
+        setItemScores(sMap);
+      }
     } catch (err: any) {
       console.error('[KpiAssignmentDetail] Load error:', err);
       setError(err.message || 'Không thể tải thông tin chi tiết giao KPI');
@@ -404,7 +442,47 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
         </div>
       )}
 
+      
+      {/* Scoring Summary */}
+      {assignmentScore && (
+        <div className="rounded-2xl bg-white border border-slate-200/80 shadow-2xs overflow-hidden">
+          <div className="bg-slate-50 border-b border-slate-100 px-6 py-4 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <Calculator className="h-5 w-5 text-indigo-500" />
+              Kết quả đánh giá
+            </h3>
+            {assignmentScore.status === 'partial' && (
+              <span className="text-xs font-medium text-amber-600 flex items-center gap-1.5 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200/50">
+                <AlertCircle className="w-3.5 h-3.5" />
+                Một số KPI chưa có dữ liệu nên điểm hiện tại chưa phải kết quả cuối cùng.
+              </span>
+            )}
+          </div>
+          <div className="p-6 grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="space-y-1">
+              <div className="text-sm font-medium text-slate-500">Điểm KPI tạm tính</div>
+              <div className="text-3xl font-bold text-indigo-600">
+                {formatScore(assignmentScore.total_score)} <span className="text-base font-medium text-slate-400">/ 100</span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium text-slate-500">Tổng trọng số</div>
+              <div className="text-xl font-bold text-slate-900">{assignmentScore.total_weight}%</div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium text-slate-500">Đã tính</div>
+              <div className="text-xl font-bold text-emerald-600">{assignmentScore.scored_weight}%</div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium text-slate-500">Chưa tính</div>
+              <div className="text-xl font-bold text-amber-500">{assignmentScore.unscored_weight}%</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Items Section */}
+
       <div className="rounded-2xl bg-white border border-slate-200/80 shadow-2xs overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-white">
           <div className="flex items-center gap-3">
@@ -436,11 +514,12 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
               <thead className="bg-slate-50/75 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 <tr>
                   <th className="px-5 py-3.5">Tiêu chí KPI</th>
-                  <th className="px-4 py-3.5">Mục tiêu liên kết</th>
                   <th className="px-4 py-3.5 text-center">Trọng số</th>
-                  <th className="px-4 py-3.5">Chỉ tiêu (Target)</th>
-                  <th className="px-4 py-3.5">Cách tính điểm</th>
-                  <th className="px-4 py-3.5 text-center">Bắt buộc</th>
+                  <th className="px-4 py-3.5">Target</th>
+                  <th className="px-4 py-3.5">Actual</th>
+                  <th className="px-4 py-3.5 text-center">Hoàn thành</th>
+                  <th className="px-4 py-3.5 text-center">Điểm</th>
+                  <th className="px-4 py-3.5">Trạng thái</th>
                   {isDraft && (
                     <th className="px-4 py-3.5 text-right">Thao tác</th>
                   )}
@@ -449,6 +528,14 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
               <tbody className="divide-y divide-slate-100 bg-white">
                 {items.map(item => {
                   const def = item.definition || item.definition_snapshot || {};
+                  const actual = actuals[item.id];
+                  const score = itemScores[item.id];
+                  const isManual = actual?.source_type === 'manual' || (item as any).bindings?.some((b: any) => b.binding_key === 'primary' && b.source_type === 'manual');
+                  const primaryBinding = (item as any).bindings?.find((b: any) => b.binding_key === 'primary' && b.is_active);
+                  const inputRole = primaryBinding?.source_config?.input_role || 'assignee';
+                  const isAssignee = assignment.assignee_type === 'individual' && assignment.assignee_user_id === user?.id;
+                  const hasInputPermission = isManual && (assignment.status === 'assigned' || assignment.status === 'active') && !(isAssignee && inputRole === 'manager');
+
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-5 py-4">
@@ -462,69 +549,104 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
                           {def.unit_code && <span>({def.unit_code})</span>}
                         </div>
                       </td>
+                      
+                      <td className="px-4 py-4 text-center">
+                        <span className="font-semibold text-slate-700">{item.weight}%</span>
+                      </td>
+
+                      <td className="px-4 py-4 text-xs text-slate-600 font-medium">
+                        {formatTargetConfig(item.target_config, def.measurement_type, def.direction, def.unit_code)}
+                      </td>
 
                       <td className="px-4 py-4 text-xs text-slate-600">
-                        {item.objective ? (
-                          <div className="truncate max-w-[180px]" title={item.objective.name}>
-                            <span className="font-semibold text-slate-700">{item.objective.code}</span> - {item.objective.name}
+                        {actual ? (
+                          <div className="flex flex-col gap-1.5 items-start">
+                            {actual.status === 'resolved' ? (
+                              <span className="font-bold text-slate-800 text-sm">
+                                {actual.value_numeric !== null ? Number(actual.value_numeric).toLocaleString('vi-VN') : actual.value_boolean !== null ? (actual.value_boolean ? 'Đạt' : 'Không đạt') : actual.value_text || '-'}
+                                {def.unit_code && def.measurement_type !== 'boolean' ? ` ${def.unit_code}` : ''}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 italic text-xs">Lỗi: {actual.status}</span>
+                            )}
+                            
+                            <div className="flex flex-wrap items-center gap-2 mt-1">
+                              {actual.status === 'resolved' && (
+                                <button
+                                  onClick={() => setTraceDrawerItemId(item.id)}
+                                  className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline transition-colors"
+                                >
+                                  Xem nguồn dữ liệu
+                                </button>
+                              )}
+
+                              {hasInputPermission && primaryBinding && (
+                                <button
+                                  onClick={() => setManualActualModal({
+                                    isOpen: true,
+                                    bindingId: primaryBinding.id,
+                                    measurementType: def.measurement_type,
+                                    requireNote: primaryBinding.source_config?.require_note === true
+                                  })}
+                                  className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-800 hover:underline transition-colors"
+                                >
+                                  {actual.status === 'resolved' ? 'Cập nhật Actual' : 'Nhập Actual'}
+                                </button>
+                              )}
+                            </div>
                           </div>
                         ) : (
-                          <span className="text-slate-400">-</span>
+                          <span className="text-slate-400 italic">Đang tải...</span>
                         )}
                       </td>
 
                       <td className="px-4 py-4 text-center">
-                        <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 font-bold text-xs">
-                          {item.weight}%
-                        </span>
+                        {score ? (
+                          score.status === 'scored' ? (
+                            <span className="font-bold text-slate-700 text-sm">{formatPercent(score.achievement_percent)}</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )
+                        ) : (
+                          <span className="text-slate-400 italic">Đang tải...</span>
+                        )}
+                      </td>
+
+                      <td className="px-4 py-4 text-center">
+                        {score ? (
+                          score.status === 'scored' ? (
+                            <span className="font-bold text-indigo-700 text-sm">{formatScore(score.weighted_score)}</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )
+                        ) : (
+                          <span className="text-slate-400 italic">Đang tải...</span>
+                        )}
                       </td>
 
                       <td className="px-4 py-4">
-                        <div className="font-bold text-indigo-600 text-sm">
-                          {formatTargetConfig(
-                            item.target_config,
-                            def.measurement_type,
-                            def.direction,
-                            def.unit_code
-                          )}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-4 text-xs text-slate-600">
-                        <div>{item.scoring_config?.method || 'linear'}</div>
-                        {item.cap_percent && (
-                          <div className="text-[11px] text-slate-400 mt-0.5">
-                            Giới hạn: {item.cap_percent}%
+                        {score ? (
+                          <div className="flex flex-col gap-1.5 items-start">
+                            <span className={`inline-flex items-center px-2 py-1 rounded-md text-[11px] font-medium ${score.status === 'scored' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                              {formatScoreStatus(score.status, score.reason)}
+                            </span>
+                            {score.status === 'scored' && (
+                              <button
+                                onClick={() => setScoreTraceItemId(item.id)}
+                                className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline transition-colors mt-1"
+                              >
+                                Xem cách tính
+                              </button>
+                            )}
                           </div>
-                        )}
-                      </td>
-
-                      <td className="px-4 py-4 text-center">
-                        {item.is_required ? (
-                          <span className="inline-flex items-center gap-1 text-emerald-600 text-xs font-semibold">
-                            <CheckCircle className="h-4 w-4" />
-                          </span>
                         ) : (
-                          <span className="text-slate-300">-</span>
+                          <span className="text-slate-400 italic text-xs">Đang tải...</span>
                         )}
                       </td>
-
-                      {isDraft && (
-                        <td className="px-4 py-4 text-right">
-                          <button
-                            type="button"
-                            onClick={() => setEditingItem(item)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" />
-                            Sửa chỉ tiêu
-                          </button>
-                        </td>
-                      )}
                     </tr>
                   );
                 })}
-              </tbody>
+</tbody>
             </table>
           </div>
         )}
@@ -707,6 +829,33 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
             </div>
           </div>
         </div>
+      )}
+
+      {manualActualModal?.isOpen && (
+        <KpiManualActualModal
+          bindingId={manualActualModal.bindingId}
+          measurementType={manualActualModal.measurementType}
+          requireNote={manualActualModal.requireNote}
+          onClose={() => setManualActualModal(null)}
+          onSuccess={() => {
+            setManualActualModal(null);
+            loadData();
+          }}
+        />
+      )}
+
+      {scoreTraceItemId && itemScores[scoreTraceItemId] && (
+        <KpiScoreTraceDrawer
+          scoreItem={itemScores[scoreTraceItemId]}
+          onClose={() => setScoreTraceItemId(null)}
+        />
+      )}
+
+      {traceDrawerItemId && (
+        <KpiActualTraceDrawer
+          assignmentItemId={traceDrawerItemId}
+          onClose={() => setTraceDrawerItemId(null)}
+        />
       )}
     </div>
   );

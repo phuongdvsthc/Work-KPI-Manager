@@ -170,6 +170,45 @@ export interface KpiAssignment {
   } | null;
 }
 
+export type KpiBindingSourceType = 'metric' | 'calculated_metric' | 'task' | 'manual' | 'formula';
+export type KpiBindingAggregationMethod = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'latest';
+export type KpiBindingScopeMode = 'assignee' | 'assignee_tree';
+
+export interface KpiTemplateItemBinding {
+  id: string;
+  template_item_id: string;
+  binding_key: string;
+  source_type: KpiBindingSourceType;
+  source_reference_id: string | null;
+  aggregation_method: KpiBindingAggregationMethod | null;
+  scope_mode: KpiBindingScopeMode | null;
+  source_config: any;
+  filter_config: any;
+  formula_config: any;
+  is_active: boolean;
+  sort_order: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface KpiAssignmentItemBinding {
+  id: string;
+  assignment_item_id: string;
+  source_template_binding_id: string | null;
+  binding_key: string;
+  source_type: KpiBindingSourceType;
+  source_reference_id: string | null;
+  aggregation_method: KpiBindingAggregationMethod | null;
+  scope_mode: KpiBindingScopeMode | null;
+  source_config: any;
+  filter_config: any;
+  formula_config: any;
+  is_active: boolean;
+  sort_order: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface KpiAssignmentItem {
   id: string;
   assignment_id: string;

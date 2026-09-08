@@ -260,7 +260,8 @@ export const kpiAssignmentService = {
         .select(`
           *,
           definition:kpi_definitions(*),
-          objective:kpi_objectives(*)
+          objective:kpi_objectives(*),
+          bindings:kpi_assignment_item_bindings(*)
         `)
         .eq('assignment_id', assignmentId)
         .order('sort_order', { ascending: true })

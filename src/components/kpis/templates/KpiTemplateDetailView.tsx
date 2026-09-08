@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Copy, CheckCircle, AlertTriangle, Loader2, Edit2, Trash2 } from 'lucide-react';
 import { kpiService } from '../../../services/kpi.service';
+import { kpiBindingService } from '../../../services/kpi-binding.service';
 import { useAuth } from '../../../context/AuthContext';
-import { KpiTemplate, KpiTemplateVersion, KpiTemplateItem, KpiTemplateStatus } from '../../../types/kpi';
+import { KpiTemplate, KpiTemplateVersion, KpiTemplateItem, KpiTemplateStatus, KpiTemplateItemBinding } from '../../../types/kpi';
+import { MetricDefinition } from '../../../types/metric';
 import { KpiTemplateItemForm } from './KpiTemplateItemForm';
+import { KpiBindingModal } from './KpiBindingModal';
 
 interface Props {
   templateId: string;
@@ -17,6 +20,8 @@ export const KpiTemplateDetailView: React.FC<Props> = ({ templateId, onBack }) =
   const [versions, setVersions] = useState<KpiTemplateVersion[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [items, setItems] = useState<KpiTemplateItem[]>([]);
+  const [bindings, setBindings] = useState<KpiTemplateItemBinding[]>([]);
+  const [metrics, setMetrics] = useState<MetricDefinition[]>([]);
   
   const [isLoading, setIsLoading] = useState(true);
   const [isItemsLoading, setIsItemsLoading] = useState(false);
@@ -24,6 +29,7 @@ export const KpiTemplateDetailView: React.FC<Props> = ({ templateId, onBack }) =
   
   const [isItemFormOpen, setIsItemFormOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<KpiTemplateItem | undefined>(undefined);
+  const [bindingModalItem, setBindingModalItem] = useState<KpiTemplateItem | null>(null);
   
   const [showPublishConfirm, setShowPublishConfirm] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
@@ -62,10 +68,20 @@ export const KpiTemplateDetailView: React.FC<Props> = ({ templateId, onBack }) =
       const { data, error } = await kpiService.getTemplateItems(versionId);
       if (error) throw error;
       setItems(data || []);
+
+      const [bindingsRes, metricsRes, calcMetricsRes] = await Promise.all([
+        kpiBindingService.getTemplateVersionBindings(versionId),
+        kpiBindingService.getAvailableMetricSources(),
+        kpiBindingService.getAvailableCalculatedMetricSources()
+      ]);
+      
+      setBindings(bindingsRes.data || []);
+      setMetrics([...metricsRes, ...calcMetricsRes]);
     } catch (err: any) {
       console.error(err);
       // Just keep items empty on error to let user know
       setItems([]);
+      setBindings([]);
     } finally {
       setIsItemsLoading(false);
     }
@@ -345,6 +361,7 @@ export const KpiTemplateDetailView: React.FC<Props> = ({ templateId, onBack }) =
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">KPI</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Mục tiêu (Cha)</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Nguồn dữ liệu</th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">Trọng số</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Chỉ tiêu (Target)</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Tính điểm</th>
@@ -367,6 +384,63 @@ export const KpiTemplateDetailView: React.FC<Props> = ({ templateId, onBack }) =
                             {item.objective.code} - {item.objective.name}
                           </div>
                         ) : '-'}
+                      </td>
+                      <td className="px-4 py-4 text-sm text-slate-600">
+                        {(() => {
+                          const itemBindings = bindings.filter(b => b.template_item_id === item.id);
+                          
+                          if (itemBindings.length === 0) {
+                            return (
+                              <div className="flex flex-col gap-2">
+                                <span className="text-slate-400 italic">Chưa cấu hình</span>
+                                {isDraft && (
+                                  <button
+                                    onClick={() => setBindingModalItem(item)}
+                                    className="text-indigo-600 hover:text-indigo-800 text-xs font-medium text-left"
+                                  >
+                                    Cấu hình nguồn dữ liệu
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="flex flex-col gap-1.5">
+                              {itemBindings.map(b => {
+                                let summary = '';
+                                if (b.source_type === 'metric' || b.source_type === 'calculated_metric') {
+                                  const metric = metrics.find(m => m.id === b.source_reference_id);
+                                  summary = `Metric · ${metric?.name || 'Không xác định'} · ${b.aggregation_method?.toUpperCase() || 'SUM'}`;
+                                } else if (b.source_type === 'task') {
+                                  const measure = kpiBindingService.getTaskMeasures().find(m => m.value === b.source_config?.measure);
+                                  summary = `Task · ${measure?.label || 'Không xác định'}`;
+                                } else if (b.source_type === 'manual') {
+                                  const role = b.source_config?.input_role === 'manager' ? 'Manager nhập' : b.source_config?.input_role === 'staff' ? 'Staff nhập' : 'Ai cũng có thể nhập';
+                                  summary = `Manual · ${role}`;
+                                } else if (b.source_type === 'formula') {
+                                  summary = `Formula`;
+                                }
+
+                                return (
+                                  <div key={b.id} className="text-xs border border-slate-200 bg-slate-50 px-2 py-1 rounded truncate max-w-[200px]" title={`${b.binding_key}: ${summary}`}>
+                                    <span className="font-semibold text-slate-700 mr-1">{b.binding_key}:</span>
+                                    {summary}
+                                  </div>
+                                );
+                              })}
+                              
+                              {isDraft && (
+                                <button
+                                  onClick={() => setBindingModalItem(item)}
+                                  className="text-indigo-600 hover:text-indigo-800 text-xs font-medium text-left mt-1"
+                                >
+                                  Sửa cấu hình
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-4 text-center">
                         <span className="inline-flex items-center justify-center h-8 w-8 rounded-full bg-indigo-50 text-indigo-700 font-bold text-sm">
@@ -430,6 +504,20 @@ export const KpiTemplateDetailView: React.FC<Props> = ({ templateId, onBack }) =
             setIsItemFormOpen(false);
             setSelectedItem(undefined);
             fetchItems(selectedVersion.id);
+          }}
+        />
+      )}
+
+      {bindingModalItem && (
+        <KpiBindingModal
+          templateItemId={bindingModalItem.id}
+          itemCode={bindingModalItem.definition?.code || ''}
+          itemName={bindingModalItem.definition?.name || ''}
+          isOpen={!!bindingModalItem}
+          onClose={() => setBindingModalItem(null)}
+          onSuccess={() => {
+            setBindingModalItem(null);
+            if (selectedVersionId) fetchItems(selectedVersionId);
           }}
         />
       )}

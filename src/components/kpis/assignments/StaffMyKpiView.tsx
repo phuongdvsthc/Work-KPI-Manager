@@ -10,24 +10,45 @@ import {
   Building2,
   ChevronDown,
   ChevronUp
+, Calculator
 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { kpiAssignmentService } from '../../../services/kpi-assignment.service';
+import { kpiActualService, KpiActualResolverResult } from '../../../services/kpiActualService';
+import { kpiScoringService, KpiScoringResult, KpiAssignmentScoreResult } from '../../../services/kpiScoringService';
+import { KpiScoreTraceDrawer } from './KpiScoreTraceDrawer';
+import { formatPercent, formatScore, formatScoreStatus } from '../../../utils/kpiScoreFormatter';
 import { 
   KpiAssignment, 
   KpiAssignmentItem, 
   KpiAssignmentStatus 
 } from '../../../types/kpi';
 import { formatTargetConfig } from '../../../utils/kpiTargetFormatter';
+import { KpiManualActualModal } from './KpiManualActualModal';
+import { KpiActualTraceDrawer } from './KpiActualTraceDrawer';
 
 export const StaffMyKpiView: React.FC = () => {
   const { user } = useAuth();
 
   const [assignments, setAssignments] = useState<KpiAssignment[]>([]);
   const [itemsMap, setItemsMap] = useState<Record<string, KpiAssignmentItem[]>>({});
+  const [actualsMap, setActualsMap] = useState<Record<string, Record<string, KpiActualResolverResult>>>({});
+  const [scoresMap, setScoresMap] = useState<Record<string, KpiAssignmentScoreResult>>({});
+  const [itemScoresMap, setItemScoresMap] = useState<Record<string, Record<string, KpiScoringResult>>>({});
+  const [scoreTraceItemId, setScoreTraceItemId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const [manualActualModal, setManualActualModal] = useState<{
+    isOpen: boolean;
+    bindingId: string;
+    measurementType: string;
+    requireNote: boolean;
+    assignmentId: string;
+  } | null>(null);
+
+  const [traceDrawerItemId, setTraceDrawerItemId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.id) {
@@ -74,9 +95,31 @@ export const StaffMyKpiView: React.FC = () => {
   const loadItemsForAssignment = async (assignmentId: string) => {
     if (itemsMap[assignmentId]) return;
     try {
-      const { data, error: itemsErr } = await kpiAssignmentService.getAssignmentItems(assignmentId);
-      if (itemsErr) throw itemsErr;
-      setItemsMap(prev => ({ ...prev, [assignmentId]: data || [] }));
+      const [itemsRes, actualsRes, scoreRes] = await Promise.all([
+        kpiAssignmentService.getAssignmentItems(assignmentId),
+        kpiActualService.resolveAssignmentActuals(assignmentId),
+        kpiScoringService.resolveAssignmentScore(assignmentId)
+      ]);
+      
+      if (itemsRes.error) throw itemsRes.error;
+      
+      setItemsMap(prev => ({ ...prev, [assignmentId]: itemsRes.data || [] }));
+      
+      if (actualsRes.data) {
+        const actMap = actualsRes.data.reduce((acc, curr) => {
+          acc[curr.assignment_item_id] = curr;
+          return acc;
+        }, {} as Record<string, KpiActualResolverResult>);
+        setActualsMap(prev => ({ ...prev, [assignmentId]: actMap }));
+      }
+      if (scoreRes.data) {
+        setScoresMap(prev => ({ ...prev, [assignmentId]: scoreRes.data as KpiAssignmentScoreResult }));
+        const sMap = scoreRes.data.items.reduce((acc, curr) => {
+          acc[curr.assignment_item_id] = curr;
+          return acc;
+        }, {} as Record<string, KpiScoringResult>);
+        setItemScoresMap(prev => ({ ...prev, [assignmentId]: sMap }));
+      }
     } catch (err) {
       console.error('Error loading assignment items:', err);
     }
@@ -244,7 +287,47 @@ export const StaffMyKpiView: React.FC = () => {
                       </div>
                     )}
 
+                    
+                    {/* Scoring Summary */}
+                    {scoresMap[assignment.id] && (
+                      <div className="rounded-xl bg-white border border-slate-200/80 shadow-2xs overflow-hidden mb-4">
+                        <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                            <Calculator className="h-4 w-4 text-indigo-500" />
+                            Kết quả đánh giá
+                          </h3>
+                          {scoresMap[assignment.id].status === 'partial' && (
+                            <span className="text-[10px] font-medium text-amber-600 flex items-center gap-1 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/50">
+                              <AlertCircle className="w-3 h-3" />
+                              Chưa phải kết quả cuối cùng.
+                            </span>
+                          )}
+                        </div>
+                        <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-500">Điểm KPI tạm tính</div>
+                            <div className="text-2xl font-bold text-indigo-600">
+                              {formatScore(scoresMap[assignment.id].total_score)} <span className="text-sm font-medium text-slate-400">/ 100</span>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-500">Tổng trọng số</div>
+                            <div className="text-lg font-bold text-slate-900">{scoresMap[assignment.id].total_weight}%</div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-500">Đã tính</div>
+                            <div className="text-lg font-bold text-emerald-600">{scoresMap[assignment.id].scored_weight}%</div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs font-medium text-slate-500">Chưa tính</div>
+                            <div className="text-lg font-bold text-amber-500">{scoresMap[assignment.id].unscored_weight}%</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="rounded-xl bg-white border border-slate-200/80 overflow-hidden shadow-2xs">
+
                       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
                         <div className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                           Danh sách tiêu chí KPI ({items.length})
@@ -264,16 +347,24 @@ export const StaffMyKpiView: React.FC = () => {
                             <thead className="bg-slate-50 text-slate-500 font-semibold uppercase tracking-wider">
                               <tr>
                                 <th className="px-4 py-3">Tiêu chí KPI</th>
-                                <th className="px-3 py-3">Mục tiêu liên kết</th>
                                 <th className="px-3 py-3 text-center">Trọng số</th>
-                                <th className="px-3 py-3">Chỉ tiêu (Target)</th>
-                                <th className="px-3 py-3">Cách tính điểm</th>
-                                <th className="px-3 py-3 text-center">Bắt buộc</th>
+                                <th className="px-3 py-3">Target</th>
+                                <th className="px-3 py-3">Actual</th>
+                                <th className="px-3 py-3 text-center">Hoàn thành</th>
+                                <th className="px-3 py-3 text-center">Điểm</th>
+                                <th className="px-3 py-3">Trạng thái</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 bg-white">
                               {items.map(item => {
                                 const def = item.definition || item.definition_snapshot || {};
+                                const actual = (actualsMap[assignment.id] || {})[item.id];
+                                const score = (itemScoresMap[assignment.id] || {})[item.id];
+                                const primaryBinding = (item as any).bindings?.find((b: any) => b.binding_key === 'primary' && b.is_active);
+                                const isManual = actual?.source_type === 'manual' || primaryBinding?.source_type === 'manual';
+                                const inputRole = primaryBinding?.source_config?.input_role || 'assignee';
+                                const hasInputPermission = isManual && (assignment.status === 'assigned' || assignment.status === 'active') && inputRole !== 'manager';
+
                                 return (
                                   <tr key={item.id} className="hover:bg-slate-50/60">
                                     <td className="px-4 py-3.5">
@@ -288,47 +379,104 @@ export const StaffMyKpiView: React.FC = () => {
                                       </div>
                                     </td>
 
-                                    <td className="px-3 py-3.5 text-slate-600">
-                                      {item.objective ? (
-                                        <div className="truncate max-w-[160px]" title={item.objective.name}>
-                                          <span className="font-semibold">{item.objective.code}</span> - {item.objective.name}
-                                        </div>
-                                      ) : '-'}
-                                    </td>
-
                                     <td className="px-3 py-3.5 text-center">
-                                      <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-bold">
-                                        {item.weight}%
-                                      </span>
+                                      <span className="font-semibold text-slate-700">{item.weight}%</span>
                                     </td>
 
-                                    <td className="px-3 py-3.5">
-                                      <div className="font-bold text-indigo-600 text-sm">
-                                        {formatTargetConfig(
-                                          item.target_config,
-                                          def.measurement_type,
-                                          def.direction,
-                                          def.unit_code
-                                        )}
-                                      </div>
+                                    <td className="px-3 py-3.5 text-slate-600 font-medium">
+                                      {formatTargetConfig(item.target_config, def.measurement_type, def.direction, def.unit_code)}
                                     </td>
 
                                     <td className="px-3 py-3.5 text-slate-600">
-                                      <div>{item.scoring_config?.method || 'linear'}</div>
-                                      {item.cap_percent && (
-                                        <div className="text-[10px] text-slate-400">Max: {item.cap_percent}%</div>
+                                      {actual ? (
+                                        <div className="flex flex-col gap-1.5 items-start">
+                                          {actual.status === 'resolved' ? (
+                                            <span className="font-bold text-slate-800 text-sm">
+                                              {actual.value_numeric !== null ? Number(actual.value_numeric).toLocaleString('vi-VN') : actual.value_boolean !== null ? (actual.value_boolean ? 'Đạt' : 'Không đạt') : actual.value_text || '-'}
+                                              {def.unit_code && def.measurement_type !== 'boolean' ? ` ${def.unit_code}` : ''}
+                                            </span>
+                                          ) : (
+                                            <span className="text-slate-500 italic text-xs">Lỗi: {actual.status}</span>
+                                          )}
+                                          
+                                          <div className="flex flex-wrap items-center gap-2 mt-1">
+                                            {actual.status === 'resolved' && (
+                                              <button
+                                                onClick={() => setTraceDrawerItemId(item.id)}
+                                                className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline transition-colors"
+                                              >
+                                                Xem nguồn dữ liệu
+                                              </button>
+                                            )}
+
+                                            {hasInputPermission && primaryBinding && (
+                                              <button
+                                                onClick={() => setManualActualModal({
+                                                  isOpen: true,
+                                                  bindingId: primaryBinding.id,
+                                                  measurementType: def.measurement_type,
+                                                  requireNote: primaryBinding.source_config?.require_note === true,
+                                                  assignmentId: assignment.id
+                                                })}
+                                                className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-800 hover:underline transition-colors"
+                                              >
+                                                {actual.status === 'resolved' ? 'Cập nhật Actual' : 'Nhập Actual'}
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-400 italic">Đang tải...</span>
                                       )}
                                     </td>
 
                                     <td className="px-3 py-3.5 text-center">
-                                      {item.is_required ? (
-                                        <CheckCircle className="h-4 w-4 text-emerald-500 mx-auto" />
-                                      ) : '-'}
+                                      {score ? (
+                                        score.status === 'scored' ? (
+                                          <span className="font-bold text-slate-700 text-sm">{formatPercent(score.achievement_percent)}</span>
+                                        ) : (
+                                          <span className="text-slate-400">-</span>
+                                        )
+                                      ) : (
+                                        <span className="text-slate-400 italic">Đang tải...</span>
+                                      )}
+                                    </td>
+
+                                    <td className="px-3 py-3.5 text-center">
+                                      {score ? (
+                                        score.status === 'scored' ? (
+                                          <span className="font-bold text-indigo-700 text-sm">{formatScore(score.weighted_score)}</span>
+                                        ) : (
+                                          <span className="text-slate-400">-</span>
+                                        )
+                                      ) : (
+                                        <span className="text-slate-400 italic">Đang tải...</span>
+                                      )}
+                                    </td>
+
+                                    <td className="px-3 py-3.5">
+                                      {score ? (
+                                        <div className="flex flex-col gap-1.5 items-start">
+                                          <span className={`inline-flex items-center px-2 py-1 rounded-md text-[11px] font-medium ${score.status === 'scored' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                            {formatScoreStatus(score.status, score.reason)}
+                                          </span>
+                                          {score.status === 'scored' && (
+                                            <button
+                                              onClick={() => setScoreTraceItemId(item.id)}
+                                              className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline transition-colors mt-1"
+                                            >
+                                              Xem cách tính
+                                            </button>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-400 italic text-xs">Đang tải...</span>
+                                      )}
                                     </td>
                                   </tr>
                                 );
                               })}
-                            </tbody>
+</tbody>
                           </table>
                         </div>
                       )}
@@ -339,6 +487,45 @@ export const StaffMyKpiView: React.FC = () => {
             );
           })}
         </div>
+      )}
+
+      {manualActualModal?.isOpen && (
+        <KpiManualActualModal
+          bindingId={manualActualModal.bindingId}
+          measurementType={manualActualModal.measurementType}
+          requireNote={manualActualModal.requireNote}
+          onClose={() => setManualActualModal(null)}
+          onSuccess={() => {
+            const asmId = manualActualModal.assignmentId;
+            setManualActualModal(null);
+            loadItemsForAssignment(asmId);
+          }}
+        />
+      )}
+
+      {scoreTraceItemId && (() => {
+        // Find the score item across all loaded assignments
+        let item: any = null;
+        for (const asmId of Object.keys(itemScoresMap)) {
+          if (itemScoresMap[asmId][scoreTraceItemId]) {
+            item = itemScoresMap[asmId][scoreTraceItemId];
+            break;
+          }
+        }
+        if (!item) return null;
+        return (
+          <KpiScoreTraceDrawer
+            scoreItem={item}
+            onClose={() => setScoreTraceItemId(null)}
+          />
+        );
+      })()}
+
+      {traceDrawerItemId && (
+        <KpiActualTraceDrawer
+          assignmentItemId={traceDrawerItemId}
+          onClose={() => setTraceDrawerItemId(null)}
+        />
       )}
     </div>
   );
