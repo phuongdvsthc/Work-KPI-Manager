@@ -15,6 +15,7 @@ import { DailyReportManager } from '../daily-reports/DailyReportManager';
 import { SupabaseConfigModal } from '../config/SupabaseConfigModal';
 import { SecurityView } from '../account/SecurityView';
 import { KpiFoundationLayout } from '../kpis/KpiFoundationLayout';
+import { StaffMyKpiView } from '../kpis/assignments/StaffMyKpiView';
 import { useAuth } from '../../context/AuthContext';
 
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
@@ -26,7 +27,7 @@ export const AppLayout: React.FC = () => {
     if (hash === 'metrics' || hash === 'metric') return 'metrics';
     if (hash === 'admin' || hash === 'admin/metrics') return 'admin';
     if (hash === 'tasks' || hash.startsWith('tasks/') || hash.startsWith('tasks?')) return 'tasks';
-    if (hash === 'kpis') return 'kpis';
+    if (hash === 'kpis' || hash.startsWith('kpis/') || hash.startsWith('kpis?')) return 'kpis';
     if (hash === 'reports') return 'reports';
     if (hash.startsWith('daily-reports')) return 'daily-reports';
     if (hash === 'account/security') return 'account/security';
@@ -136,7 +137,7 @@ export const AppLayout: React.FC = () => {
               <MetricEntryView />
             ) : safeTab === 'kpis' ? (
               systemRole === 'staff' ? (
-                <PlaceholderView tab="kpis" onNavigateTab={handleSelectTab} />
+                <StaffMyKpiView />
               ) : (
                 <KpiFoundationLayout />
               )

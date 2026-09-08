@@ -5,7 +5,8 @@ import {
   KpiDefinition, 
   KpiTemplate, 
   KpiTemplateVersion, 
-  KpiTemplateItem 
+  KpiTemplateItem,
+  KpiTemplateStatus 
 } from '../types/kpi';
 
 export const kpiService = {
@@ -31,7 +32,7 @@ export const kpiService = {
 
   async createPeriod(period: Partial<KpiPeriod>): Promise<{ data: KpiPeriod | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_periods').insert([period]).select().single();
+      const { data, error } = await (supabase.from('kpi_periods') as any).insert([period]).select().single();
       if (error) throw error;
       return { data: data as KpiPeriod, error: null };
     } catch (err: any) {
@@ -41,7 +42,7 @@ export const kpiService = {
 
   async updatePeriod(id: string, period: Partial<KpiPeriod>): Promise<{ data: KpiPeriod | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_periods').update(period).eq('id', id).select().single();
+      const { data, error } = await (supabase.from('kpi_periods') as any).update(period).eq('id', id).select().single();
       if (error) throw error;
       return { data: data as KpiPeriod, error: null };
     } catch (err: any) {
@@ -70,7 +71,7 @@ export const kpiService = {
 
   async createObjective(objective: Partial<KpiObjective>): Promise<{ data: KpiObjective | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_objectives').insert([objective]).select().single();
+      const { data, error } = await (supabase.from('kpi_objectives') as any).insert([objective]).select().single();
       if (error) throw error;
       return { data: data as KpiObjective, error: null };
     } catch (err: any) {
@@ -80,7 +81,7 @@ export const kpiService = {
 
   async updateObjective(id: string, objective: Partial<KpiObjective>): Promise<{ data: KpiObjective | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_objectives').update(objective).eq('id', id).select().single();
+      const { data, error } = await (supabase.from('kpi_objectives') as any).update(objective).eq('id', id).select().single();
       if (error) throw error;
       return { data: data as KpiObjective, error: null };
     } catch (err: any) {
@@ -109,7 +110,7 @@ export const kpiService = {
 
   async createDefinition(definition: Partial<KpiDefinition>): Promise<{ data: KpiDefinition | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_definitions').insert([definition]).select().single();
+      const { data, error } = await (supabase.from('kpi_definitions') as any).insert([definition]).select().single();
       if (error) throw error;
       return { data: data as KpiDefinition, error: null };
     } catch (err: any) {
@@ -119,7 +120,7 @@ export const kpiService = {
 
   async updateDefinition(id: string, definition: Partial<KpiDefinition>): Promise<{ data: KpiDefinition | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_definitions').update(definition).eq('id', id).select().single();
+      const { data, error } = await (supabase.from('kpi_definitions') as any).update(definition).eq('id', id).select().single();
       if (error) throw error;
       return { data: data as KpiDefinition, error: null };
     } catch (err: any) {
@@ -158,12 +159,12 @@ export const kpiService = {
 
   async createTemplate(template: Partial<KpiTemplate>): Promise<{ data: KpiTemplate | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_templates').insert([template]).select().single();
-      if (error) throw error;
+      const { data, error } = await (supabase.from('kpi_templates') as any).insert([template]).select().single();
+      if (error || !data) throw error || new Error('Không thể tạo mẫu KPI');
       
       // Auto create draft version 1
-      const { error: vError } = await supabase.from('kpi_template_versions').insert([{
-        template_id: data.id,
+      const { error: vError } = await (supabase.from('kpi_template_versions') as any).insert([{
+        template_id: (data as any).id,
         version_no: 1,
         status: 'draft'
       }]);
@@ -177,7 +178,7 @@ export const kpiService = {
 
   async updateTemplate(id: string, template: Partial<KpiTemplate>): Promise<{ data: KpiTemplate | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_templates').update(template).eq('id', id).select().single();
+      const { data, error } = await (supabase.from('kpi_templates') as any).update(template).eq('id', id).select().single();
       if (error) throw error;
       return { data: data as KpiTemplate, error: null };
     } catch (err: any) {
@@ -204,14 +205,14 @@ export const kpiService = {
         .order('version_no', { ascending: false })
         .limit(1);
       if (vError) throw vError;
-      const nextVersion = (versions?.[0]?.version_no || 0) + 1;
+      const nextVersion = ((versions as any[])?.[0]?.version_no || 0) + 1;
       
-      const { data: newVersion, error: createError } = await supabase.from('kpi_template_versions').insert([{
+      const { data: newVersion, error: createError } = await (supabase.from('kpi_template_versions') as any).insert([{
         template_id: templateId,
         version_no: nextVersion,
         status: 'draft'
       }]).select().single();
-      if (createError) throw createError;
+      if (createError || !newVersion) throw createError || new Error('Không thể nhân bản phiên bản');
 
       // Copy items
       const { data: sourceItems, error: itemsError } = await supabase.from('kpi_template_items')
@@ -220,8 +221,8 @@ export const kpiService = {
       if (itemsError) throw itemsError;
 
       if (sourceItems && sourceItems.length > 0) {
-        const newItems = sourceItems.map(item => ({
-          template_version_id: newVersion.id,
+        const newItems = (sourceItems as any[]).map(item => ({
+          template_version_id: (newVersion as any).id,
           kpi_definition_id: item.kpi_definition_id,
           objective_id: item.objective_id,
           weight: item.weight,
@@ -232,7 +233,7 @@ export const kpiService = {
           sort_order: item.sort_order,
           config: item.config
         }));
-        const { error: insertItemsError } = await supabase.from('kpi_template_items').insert(newItems);
+        const { error: insertItemsError } = await (supabase.from('kpi_template_items') as any).insert(newItems);
         if (insertItemsError) throw insertItemsError;
       }
 
@@ -245,7 +246,7 @@ export const kpiService = {
   async updateTemplateVersionStatus(versionId: string, status: KpiTemplateStatus): Promise<{ data: KpiTemplateVersion | null; error: Error | null }> {
     try {
       const updateData: any = { status };
-      let query = supabase.from('kpi_template_versions').update(updateData).eq('id', versionId);
+      let query = (supabase.from('kpi_template_versions') as any).update(updateData).eq('id', versionId);
       
       // If publishing, ensure it is currently draft
       if (status === 'published') {
@@ -282,7 +283,7 @@ export const kpiService = {
 
   async addTemplateItem(item: Partial<KpiTemplateItem>): Promise<{ data: KpiTemplateItem | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_template_items').insert([item]).select().single();
+      const { data, error } = await (supabase.from('kpi_template_items') as any).insert([item]).select().single();
       if (error) throw error;
       return { data: data as KpiTemplateItem, error: null };
     } catch (err: any) {
@@ -292,7 +293,7 @@ export const kpiService = {
 
   async updateTemplateItem(id: string, item: Partial<KpiTemplateItem>): Promise<{ data: KpiTemplateItem | null; error: Error | null }> {
     try {
-      const { data, error } = await supabase.from('kpi_template_items').update(item).eq('id', id).select().single();
+      const { data, error } = await (supabase.from('kpi_template_items') as any).update(item).eq('id', id).select().single();
       if (error) throw error;
       return { data: data as KpiTemplateItem, error: null };
     } catch (err: any) {

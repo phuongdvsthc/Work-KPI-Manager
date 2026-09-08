@@ -158,6 +158,79 @@ export interface Database {
         Insert: any;
         Update: any;
       };
+      kpi_periods: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_objectives: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_definitions: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_templates: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_template_versions: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_template_items: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_assignments: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+      kpi_assignment_items: {
+        Row: Record<string, any>;
+        Insert: Record<string, any>;
+        Update: Record<string, any>;
+      };
+    };
+    Functions: {
+      kpi_create_assignment_from_template: {
+        Args: {
+          p_period_id: string;
+          p_template_version_id: string;
+          p_assignee_type: string;
+          p_assignee_user_id?: string | null;
+          p_assignee_organization_unit_id?: string | null;
+          p_effective_from?: string | null;
+          p_effective_to?: string | null;
+          p_notes?: string | null;
+        };
+        Returns: string;
+      };
+      kpi_can_assign_to_user: {
+        Args: {
+          p_user_id: string;
+        };
+        Returns: boolean;
+      };
+      kpi_can_manage_assignment: {
+        Args: {
+          p_assignment_id: string;
+        };
+        Returns: boolean;
+      };
+      kpi_can_view_assignment: {
+        Args: {
+          p_assignment_id: string;
+        };
+        Returns: boolean;
+      };
     };
   };
 }

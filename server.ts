@@ -4849,6 +4849,305 @@ async function startServer() {
     }
   });
 
+  // ==========================================
+  // KPI ASSIGNMENTS API
+  // ==========================================
+
+  // 1. GET /api/kpi/assignments/:id - Chi tiết giao KPI kèm thông tin đối tượng nhận được giải quyết an toàn
+  app.get('/api/kpi/assignments/:id', authenticateUser, async (req: Request, res: Response) => {
+    try {
+      const supabaseAdmin = res.locals.supabaseAdmin;
+      const currentUser = res.locals.user;
+      const profile = res.locals.profile;
+      const assignmentId = req.params.id;
+
+      // Check existence and baseline access
+      const { data: rawAssignment, error: rawErr } = await supabaseAdmin
+        .from('kpi_assignments')
+        .select('*')
+        .eq('id', assignmentId)
+        .maybeSingle();
+
+      if (rawErr) {
+        return res.status(500).json({ error: rawErr.message });
+      }
+      if (!rawAssignment) {
+        return res.status(404).json({ error: 'Không tìm thấy lượt giao KPI' });
+      }
+
+      // Authorization verification
+      let allowed = false;
+      if (profile.system_role === 'admin' || profile.system_role === 'executive') {
+        allowed = true;
+      } else if (
+        rawAssignment.assignee_user_id === currentUser.id ||
+        rawAssignment.created_by === currentUser.id ||
+        rawAssignment.assigned_by === currentUser.id
+      ) {
+        allowed = true;
+      } else if (profile.system_role === 'manager') {
+        const { scopeUnitIds } = await resolveManagerScopeUnits(
+          supabaseAdmin,
+          currentUser.id,
+          profile.system_role
+        );
+        if (
+          (rawAssignment.assignee_unit_id_snapshot && scopeUnitIds.has(rawAssignment.assignee_unit_id_snapshot)) ||
+          (rawAssignment.assignee_organization_unit_id && scopeUnitIds.has(rawAssignment.assignee_organization_unit_id))
+        ) {
+          allowed = true;
+        }
+      }
+
+      if (!allowed) {
+        // Fallback check using Postgres RPC kpi_can_view_assignment
+        try {
+          const userClient = createClient(
+            process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
+            process.env.VITE_SUPABASE_ANON_KEY || '',
+            {
+              auth: { persistSession: false },
+              global: { headers: { Authorization: req.headers.authorization as string } },
+            }
+          );
+          const { data: canView } = await userClient.rpc('kpi_can_view_assignment', {
+            p_assignment_id: assignmentId,
+          });
+          if (canView) {
+            allowed = true;
+          }
+        } catch {
+          // ignore rpc check error
+        }
+      }
+
+      if (!allowed) {
+        return res.status(403).json({ error: 'Bạn không có quyền xem lượt giao KPI này' });
+      }
+
+      // Query full assignment with joined relations via admin client
+      const { data: fullAssignment, error: fullErr } = await supabaseAdmin
+        .from('kpi_assignments')
+        .select(`
+          *,
+          period:kpi_periods(id, name, code, status, start_date, end_date),
+          template:kpi_templates(id, name, code, scope_type),
+          template_version:kpi_template_versions(id, version_no, status),
+          assignee_user:profiles!kpi_assignments_assignee_user_id_fkey(id, full_name, email, employee_code, job_title),
+          assignee_unit:organization_units!kpi_assignments_assignee_organization_unit_id_fkey(id, name, code),
+          assignee_unit_snapshot:organization_units!kpi_assignments_assignee_unit_id_snapshot_fkey(id, name, code),
+          creator:profiles!kpi_assignments_created_by_fkey(id, full_name),
+          assigner:profiles!kpi_assignments_assigned_by_fkey(id, full_name)
+        `)
+        .eq('id', assignmentId)
+        .single();
+
+      if (fullErr) {
+        return res.status(500).json({ error: fullErr.message });
+      }
+
+      let assigneeName = '-';
+      let assigneeEmail: string | null = null;
+      let assigneeEmployeeCode: string | null = null;
+      const assigneeOrganizationName =
+        fullAssignment.assignee_unit?.name || fullAssignment.assignee_unit_snapshot?.name || null;
+
+      if (fullAssignment.assignee_type === 'individual') {
+        assigneeName = fullAssignment.assignee_user?.full_name || '-';
+        assigneeEmail = fullAssignment.assignee_user?.email || null;
+        assigneeEmployeeCode = fullAssignment.assignee_user?.employee_code || null;
+      } else if (fullAssignment.assignee_type === 'organization') {
+        assigneeName = fullAssignment.assignee_unit?.name || '-';
+      }
+
+      const formatted = {
+        ...fullAssignment,
+        periodId: fullAssignment.period_id || fullAssignment.period?.id,
+        periodName: fullAssignment.period?.name || null,
+        templateId: fullAssignment.template_id || fullAssignment.template?.id,
+        templateName: fullAssignment.template?.name || null,
+        templateVersionId: fullAssignment.template_version_id || fullAssignment.template_version?.id,
+        templateVersionNo: fullAssignment.template_version?.version_no ?? null,
+        assigneeName,
+        assigneeEmail,
+        assigneeEmployeeCode,
+        assigneeOrganizationName,
+        assigneeUnitSnapshotName: fullAssignment.assignee_unit_snapshot?.name || assigneeOrganizationName,
+        effectiveFrom: fullAssignment.effective_from || fullAssignment.period?.start_date || null,
+        effectiveTo: fullAssignment.effective_to || fullAssignment.period?.end_date || null,
+      };
+
+      res.json({ success: true, data: formatted });
+    } catch (err: any) {
+      console.error('[API /api/kpi/assignments/:id] Error:', err);
+      res.status(500).json({ error: err.message || 'Lỗi hệ thống khi tải chi tiết giao KPI' });
+    }
+  });
+
+  // 2. GET /api/kpi/assignments - Danh sách giao KPI kèm thông tin đối tượng nhận
+  app.get('/api/kpi/assignments', authenticateUser, async (req: Request, res: Response) => {
+    try {
+      const supabaseAdmin = res.locals.supabaseAdmin;
+      const currentUser = res.locals.user;
+      const profile = res.locals.profile;
+
+      let query = supabaseAdmin
+        .from('kpi_assignments')
+        .select(`
+          *,
+          period:kpi_periods(id, name, code, status, start_date, end_date),
+          template:kpi_templates(id, name, code, scope_type),
+          template_version:kpi_template_versions(id, version_no, status),
+          assignee_user:profiles!kpi_assignments_assignee_user_id_fkey(id, full_name, email, employee_code, job_title),
+          assignee_unit:organization_units!kpi_assignments_assignee_organization_unit_id_fkey(id, name, code),
+          assignee_unit_snapshot:organization_units!kpi_assignments_assignee_unit_id_snapshot_fkey(id, name, code),
+          creator:profiles!kpi_assignments_created_by_fkey(id, full_name),
+          assigner:profiles!kpi_assignments_assigned_by_fkey(id, full_name)
+        `)
+        .order('created_at', { ascending: false });
+
+      const periodId = req.query.periodId as string;
+      const status = req.query.status as string;
+      const assigneeType = req.query.assigneeType as string;
+      const orgUnitId = req.query.orgUnitId as string;
+
+      if (periodId && periodId !== 'all') {
+        query = query.eq('period_id', periodId);
+      }
+      if (status && status !== 'all') {
+        query = query.eq('status', status);
+      }
+      if (assigneeType && assigneeType !== 'all') {
+        query = query.eq('assignee_type', assigneeType);
+      }
+      if (orgUnitId && orgUnitId !== 'all') {
+        query = query.or(`assignee_organization_unit_id.eq.${orgUnitId},assignee_unit_id_snapshot.eq.${orgUnitId}`);
+      }
+
+      // Manager / Staff scope restriction
+      if (profile.system_role !== 'admin' && profile.system_role !== 'executive') {
+        if (profile.system_role === 'manager') {
+          const { scopeUnitIds } = await resolveManagerScopeUnits(
+            supabaseAdmin,
+            currentUser.id,
+            profile.system_role
+          );
+          const allowedUnits = Array.from(scopeUnitIds);
+          if (allowedUnits.length > 0) {
+            query = query.or(
+              `assignee_user_id.eq.${currentUser.id},created_by.eq.${currentUser.id},assigned_by.eq.${currentUser.id},assignee_unit_id_snapshot.in.(${allowedUnits.join(',')}),assignee_organization_unit_id.in.(${allowedUnits.join(',')})`
+            );
+          } else {
+            query = query.or(
+              `assignee_user_id.eq.${currentUser.id},created_by.eq.${currentUser.id},assigned_by.eq.${currentUser.id}`
+            );
+          }
+        } else {
+          // Staff sees their individual assignment
+          query = query.eq('assignee_user_id', currentUser.id);
+        }
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const formattedList = (data || []).map((item: any) => {
+        let assigneeName = '-';
+        let assigneeEmail: string | null = null;
+        let assigneeEmployeeCode: string | null = null;
+        const assigneeOrganizationName =
+          item.assignee_unit?.name || item.assignee_unit_snapshot?.name || null;
+
+        if (item.assignee_type === 'individual') {
+          assigneeName = item.assignee_user?.full_name || '-';
+          assigneeEmail = item.assignee_user?.email || null;
+          assigneeEmployeeCode = item.assignee_user?.employee_code || null;
+        } else if (item.assignee_type === 'organization') {
+          assigneeName = item.assignee_unit?.name || '-';
+        }
+
+        return {
+          ...item,
+          periodId: item.period_id || item.period?.id,
+          periodName: item.period?.name || null,
+          templateId: item.template_id || item.template?.id,
+          templateName: item.template?.name || null,
+          templateVersionId: item.template_version_id || item.template_version?.id,
+          templateVersionNo: item.template_version?.version_no ?? null,
+          assigneeName,
+          assigneeEmail,
+          assigneeEmployeeCode,
+          assigneeOrganizationName,
+          assigneeUnitSnapshotName: item.assignee_unit_snapshot?.name || assigneeOrganizationName,
+          effectiveFrom: item.effective_from || item.period?.start_date || null,
+          effectiveTo: item.effective_to || item.period?.end_date || null,
+        };
+      });
+
+      res.json({ success: true, data: formattedList });
+    } catch (err: any) {
+      console.error('[API /api/kpi/assignments] Error:', err);
+      res.status(500).json({ error: err.message || 'Lỗi khi tải danh sách giao KPI' });
+    }
+  });
+
+  // 3. GET /api/kpi/my-assignments - Lấy KPI cá nhân của người dùng hiện tại (Staff / Manager)
+  app.get('/api/kpi/my-assignments', authenticateUser, async (req: Request, res: Response) => {
+    try {
+      const supabaseAdmin = res.locals.supabaseAdmin;
+      const currentUser = res.locals.user;
+
+      const { data, error } = await supabaseAdmin
+        .from('kpi_assignments')
+        .select(`
+          *,
+          period:kpi_periods(id, name, code, status, start_date, end_date),
+          template:kpi_templates(id, name, code, scope_type),
+          template_version:kpi_template_versions(id, version_no, status),
+          assignee_user:profiles!kpi_assignments_assignee_user_id_fkey(id, full_name, email, employee_code, job_title),
+          assignee_unit:organization_units!kpi_assignments_assignee_organization_unit_id_fkey(id, name, code),
+          assignee_unit_snapshot:organization_units!kpi_assignments_assignee_unit_id_snapshot_fkey(id, name, code),
+          assigner:profiles!kpi_assignments_assigned_by_fkey(id, full_name)
+        `)
+        .eq('assignee_type', 'individual')
+        .eq('assignee_user_id', currentUser.id)
+        .in('status', ['assigned', 'active', 'closed', 'locked'])
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      const formattedList = (data || []).map((item: any) => {
+        const assigneeName = item.assignee_user?.full_name || '-';
+        const assigneeEmail = item.assignee_user?.email || null;
+        const assigneeEmployeeCode = item.assignee_user?.employee_code || null;
+        const assigneeOrganizationName = item.assignee_unit?.name || item.assignee_unit_snapshot?.name || null;
+        const assigneeUnitSnapshotName = item.assignee_unit_snapshot?.name || assigneeOrganizationName;
+
+        return {
+          ...item,
+          periodId: item.period_id || item.period?.id,
+          periodName: item.period?.name || null,
+          templateId: item.template_id || item.template?.id,
+          templateName: item.template?.name || null,
+          templateVersionId: item.template_version_id || item.template_version?.id,
+          templateVersionNo: item.template_version?.version_no ?? null,
+          assigneeName,
+          assigneeEmail,
+          assigneeEmployeeCode,
+          assigneeOrganizationName,
+          assigneeUnitSnapshotName,
+          effectiveFrom: item.effective_from || item.period?.start_date || null,
+          effectiveTo: item.effective_to || item.period?.end_date || null,
+        };
+      });
+
+      res.json({ success: true, data: formattedList });
+    } catch (err: any) {
+      console.error('[API /api/kpi/my-assignments] Error:', err);
+      res.status(500).json({ error: err.message || 'Lỗi khi tải KPI cá nhân' });
+    }
+  });
+
   // Vite middleware for development
 
 
