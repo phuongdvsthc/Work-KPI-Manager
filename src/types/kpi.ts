@@ -230,3 +230,78 @@ export interface KpiAssignmentItem {
   definition?: KpiDefinition;
   objective?: KpiObjective;
 }
+
+export type KpiReviewStatus = 'not_started' | 'in_review' | 'returned' | 'approved';
+
+export interface KpiAssignmentItemReview {
+  id: string;
+  assignment_item_id: string;
+  review_id: string;
+  actual_snapshot?: any;
+  score_snapshot?: any;
+  final_raw_score: number | null;
+  final_weighted_score: number | null;
+  final_achievement_percent: number | null;
+  reviewer_note?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface KpiAssignmentReview {
+  id: string;
+  assignment_id: string;
+  status: KpiReviewStatus;
+  reviewer_id: string | null;
+  review_note: string | null;
+  started_at: string | null;
+  returned_at: string | null;
+  approved_at: string | null;
+  created_at?: string;
+  updated_at?: string;
+
+  // Additional display / join fields
+  reviewer?: {
+    id: string;
+    full_name: string;
+    email?: string;
+  } | null;
+  reviewer_name?: string | null;
+  official_total_score?: number | null;
+  items?: KpiAssignmentItemReview[];
+}
+
+export interface KpiOfficialItemResult {
+  assignment_item_id: string;
+  review_id: string | null;
+  kpi_title: string;
+  kpi_code?: string;
+  measurement_type?: string;
+  weight: number;
+  target_value?: number | null;
+  target_config?: any;
+  final_actual_value?: number | null;
+  final_achievement_percent?: number | null;
+  final_raw_score?: number | null;
+  final_weighted_score?: number | null;
+  actual_snapshot?: any;
+  score_snapshot?: any;
+  reviewer_note?: string | null;
+}
+
+export interface KpiOfficialAssignmentResult {
+  assignment_id: string;
+  review_id: string | null;
+  is_locked: boolean;
+  status: KpiAssignmentStatus;
+  official_total_score: number | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  approved_by_name?: string | null;
+  locked_at: string | null;
+  locked_by: string | null;
+  locked_by_name?: string | null;
+  review_note: string | null;
+  lock_note: string | null;
+  items: KpiOfficialItemResult[];
+}
+

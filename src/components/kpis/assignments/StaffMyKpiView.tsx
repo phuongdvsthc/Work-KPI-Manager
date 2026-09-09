@@ -9,19 +9,23 @@ import {
   Clock, 
   Building2,
   ChevronDown,
-  ChevronUp
-, Calculator
+  ChevronUp,
+  Calculator,
+  Lock
 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { kpiAssignmentService } from '../../../services/kpi-assignment.service';
 import { kpiActualService, KpiActualResolverResult } from '../../../services/kpiActualService';
 import { kpiScoringService, KpiScoringResult, KpiAssignmentScoreResult } from '../../../services/kpiScoringService';
+import { kpiReviewService } from '../../../services/kpiReviewService';
 import { KpiScoreTraceDrawer } from './KpiScoreTraceDrawer';
 import { formatPercent, formatScore, formatScoreStatus } from '../../../utils/kpiScoreFormatter';
+import { formatReviewStatus } from '../../../utils/kpiReviewFormatter';
 import { 
   KpiAssignment, 
   KpiAssignmentItem, 
-  KpiAssignmentStatus 
+  KpiAssignmentStatus,
+  KpiAssignmentReview
 } from '../../../types/kpi';
 import { formatTargetConfig } from '../../../utils/kpiTargetFormatter';
 import { KpiManualActualModal } from './KpiManualActualModal';
@@ -35,6 +39,7 @@ export const StaffMyKpiView: React.FC = () => {
   const [actualsMap, setActualsMap] = useState<Record<string, Record<string, KpiActualResolverResult>>>({});
   const [scoresMap, setScoresMap] = useState<Record<string, KpiAssignmentScoreResult>>({});
   const [itemScoresMap, setItemScoresMap] = useState<Record<string, Record<string, KpiScoringResult>>>({});
+  const [reviewsMap, setReviewsMap] = useState<Record<string, KpiAssignmentReview>>({});
   const [scoreTraceItemId, setScoreTraceItemId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,10 +100,11 @@ export const StaffMyKpiView: React.FC = () => {
   const loadItemsForAssignment = async (assignmentId: string) => {
     if (itemsMap[assignmentId]) return;
     try {
-      const [itemsRes, actualsRes, scoreRes] = await Promise.all([
+      const [itemsRes, actualsRes, scoreRes, reviewRes] = await Promise.all([
         kpiAssignmentService.getAssignmentItems(assignmentId),
         kpiActualService.resolveAssignmentActuals(assignmentId),
-        kpiScoringService.resolveAssignmentScore(assignmentId)
+        kpiScoringService.resolveAssignmentScore(assignmentId),
+        kpiReviewService.getReviewByAssignment(assignmentId)
       ]);
       
       if (itemsRes.error) throw itemsRes.error;
@@ -119,6 +125,9 @@ export const StaffMyKpiView: React.FC = () => {
           return acc;
         }, {} as Record<string, KpiScoringResult>);
         setItemScoresMap(prev => ({ ...prev, [assignmentId]: sMap }));
+      }
+      if (reviewRes.data) {
+        setReviewsMap(prev => ({ ...prev, [assignmentId]: reviewRes.data as KpiAssignmentReview }));
       }
     } catch (err) {
       console.error('Error loading assignment items:', err);
@@ -143,7 +152,7 @@ export const StaffMyKpiView: React.FC = () => {
       case 'closed':
         return <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-zinc-100 text-zinc-700">Đã kết thúc</span>;
       case 'locked':
-        return <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-amber-50 text-amber-700 border border-amber-200">Đã khóa</span>;
+        return <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-900 text-white flex items-center gap-1"><Lock className="w-3 h-3" /> Đã khóa</span>;
       default:
         return <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-100 text-slate-700">{status}</span>;
     }
@@ -238,6 +247,17 @@ export const StaffMyKpiView: React.FC = () => {
                           {templateDisplayName}
                         </h3>
                         {getStatusBadge(assignment.status)}
+                        {reviewsMap[assignment.id] && reviewsMap[assignment.id].status !== 'not_started' && (
+                          <span className={`px-2.5 py-0.5 text-xs font-semibold rounded-full border ${
+                            formatReviewStatus(reviewsMap[assignment.id].status).bgClass
+                          } ${
+                            formatReviewStatus(reviewsMap[assignment.id].status).textClass
+                          } ${
+                            formatReviewStatus(reviewsMap[assignment.id].status).borderClass
+                          }`}>
+                            {formatReviewStatus(reviewsMap[assignment.id].status).label}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-slate-500 flex items-center gap-2 mt-1.5 flex-wrap">
                         <span className="flex items-center gap-1.5">
@@ -288,27 +308,141 @@ export const StaffMyKpiView: React.FC = () => {
                     )}
 
                     
+                    {/* Review & Lock Status Banner for Staff */}
+                    {assignment.status === 'locked' ? (
+                      <div id={`locked-banner-${assignment.id}`} className="rounded-xl bg-slate-900 text-white p-4 text-xs space-y-2.5 shadow-xs">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2 font-bold text-sm text-emerald-400">
+                            <Lock className="w-4 h-4 text-emerald-400" />
+                            Kết quả KPI chính thức đã được khóa (Locked)
+                          </div>
+                          <span className="text-slate-300 text-[11px] bg-slate-800 px-2.5 py-0.5 rounded-full border border-slate-700">
+                            Snapshot kết quả bất biến
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-slate-300 pt-1">
+                          <div className="bg-slate-800/80 p-2.5 rounded-lg border border-slate-700/60">
+                            <span className="text-slate-400 block text-[11px]">Điểm chính thức</span>
+                            <strong className="text-emerald-400 font-bold text-base">
+                              {formatScore(reviewsMap[assignment.id]?.official_total_score ?? assignment.config?.official_result?.total_score ?? scoresMap[assignment.id]?.total_score ?? 0)}
+                              <span className="text-xs font-normal text-slate-400"> / 100</span>
+                            </strong>
+                          </div>
+                          <div className="bg-slate-800/80 p-2.5 rounded-lg border border-slate-700/60">
+                            <span className="text-slate-400 block text-[11px]">Thời gian khóa</span>
+                            <strong className="text-white font-medium text-xs">
+                              {assignment.locked_at ? new Date(assignment.locked_at).toLocaleString('vi-VN') : '—'}
+                            </strong>
+                          </div>
+                          <div className="bg-slate-800/80 p-2.5 rounded-lg border border-slate-700/60">
+                            <span className="text-slate-400 block text-[11px]">Người khóa</span>
+                            <strong className="text-white font-medium text-xs">
+                              {assignment.config?.locked_by_name || 'Quản trị viên'}
+                            </strong>
+                          </div>
+                        </div>
+                        {assignment.config?.lock_note && (
+                          <div className="pt-2 border-t border-slate-800 text-slate-300">
+                            <span className="text-slate-400 font-medium">Ghi chú khóa:</span> {assignment.config.lock_note}
+                          </div>
+                        )}
+                      </div>
+                    ) : reviewsMap[assignment.id] ? (
+                      <>
+                        {reviewsMap[assignment.id].status === 'approved' && (
+                          <div className="rounded-xl bg-emerald-50 border border-emerald-200/80 p-4 text-xs text-emerald-900 space-y-2">
+                            <div className="flex items-center gap-2 font-bold text-emerald-800 text-sm">
+                              <CheckCircle className="w-4 h-4 text-emerald-600" />
+                              Kết quả KPI đã được phê duyệt chính thức
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-600 pt-1">
+                              <div>
+                                <span className="text-slate-400">Người phê duyệt:</span>{' '}
+                                <strong className="text-slate-800 font-semibold">{reviewsMap[assignment.id].reviewer_name || 'Cán bộ quản lý'}</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">Thời gian phê duyệt:</span>{' '}
+                                <strong className="text-slate-800 font-semibold">
+                                  {reviewsMap[assignment.id].approved_at ? new Date(reviewsMap[assignment.id].approved_at!).toLocaleString('vi-VN') : '—'}
+                                </strong>
+                              </div>
+                            </div>
+                            {reviewsMap[assignment.id].review_note && (
+                              <div className="pt-1.5 border-t border-emerald-200/60 text-slate-700">
+                                <span className="font-semibold text-slate-800">Nhận xét của người phê duyệt:</span> {reviewsMap[assignment.id].review_note}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {reviewsMap[assignment.id].status === 'returned' && (
+                          <div className="rounded-xl bg-amber-50 border border-amber-200/80 p-4 text-xs text-amber-900 space-y-2">
+                            <div className="flex items-center gap-2 font-bold text-amber-800 text-sm">
+                              <AlertCircle className="w-4 h-4 text-amber-600" />
+                              Yêu cầu điều chỉnh kết quả KPI
+                            </div>
+                            <p className="text-amber-800">
+                              Cán bộ quản lý đã trả lại kết quả đánh giá để rà soát hoặc điều chỉnh số liệu thực tế.
+                            </p>
+                            {reviewsMap[assignment.id].review_note && (
+                              <div className="p-3 bg-white rounded-lg border border-amber-200 text-slate-700">
+                                <span className="font-semibold text-slate-800">Lý do trả lại:</span> {reviewsMap[assignment.id].review_note}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {reviewsMap[assignment.id].status === 'in_review' && (
+                          <div className="rounded-xl bg-blue-50 border border-blue-200/80 p-3.5 text-xs text-blue-900 flex items-center gap-2.5">
+                            <Clock className="w-4 h-4 text-blue-600 shrink-0" />
+                            <span>KPI đang trong quá trình đánh giá và thẩm định bởi cán bộ quản lý.</span>
+                          </div>
+                        )}
+                      </>
+                    ) : null}
+
                     {/* Scoring Summary */}
                     {scoresMap[assignment.id] && (
                       <div className="rounded-xl bg-white border border-slate-200/80 shadow-2xs overflow-hidden mb-4">
                         <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex items-center justify-between">
                           <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                             <Calculator className="h-4 w-4 text-indigo-500" />
-                            Kết quả đánh giá
+                            {reviewsMap[assignment.id]?.status === 'approved' ? 'Kết quả KPI chính thức' : 'Kết quả đánh giá'}
                           </h3>
-                          {scoresMap[assignment.id].status === 'partial' && (
+                          {reviewsMap[assignment.id]?.status === 'approved' ? (
+                            <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1 bg-emerald-50 px-2.5 py-0.5 rounded border border-emerald-200">
+                              <CheckCircle className="w-3 h-3" />
+                              Đã phê duyệt chính thức
+                            </span>
+                          ) : scoresMap[assignment.id].status === 'partial' ? (
                             <span className="text-[10px] font-medium text-amber-600 flex items-center gap-1 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/50">
                               <AlertCircle className="w-3 h-3" />
                               Chưa phải kết quả cuối cùng.
                             </span>
-                          )}
+                          ) : null}
                         </div>
                         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
                           <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-500">Điểm KPI tạm tính</div>
-                            <div className="text-2xl font-bold text-indigo-600">
-                              {formatScore(scoresMap[assignment.id].total_score)} <span className="text-sm font-medium text-slate-400">/ 100</span>
+                            <div className="text-xs font-medium text-slate-500">
+                              {reviewsMap[assignment.id]?.status === 'approved' ? 'Điểm đã phê duyệt' : 'Điểm KPI tạm tính'}
                             </div>
+                            <div className={`text-2xl font-bold ${
+                              reviewsMap[assignment.id]?.status === 'approved' ? 'text-emerald-600' : 'text-indigo-600'
+                            }`}>
+                              {formatScore(
+                                reviewsMap[assignment.id]?.status === 'approved' && reviewsMap[assignment.id]?.official_total_score !== undefined && reviewsMap[assignment.id]?.official_total_score !== null
+                                  ? reviewsMap[assignment.id].official_total_score!
+                                  : scoresMap[assignment.id].total_score
+                              )}{' '}
+                              <span className="text-sm font-medium text-slate-400">/ 100</span>
+                            </div>
+                            {reviewsMap[assignment.id]?.status === 'approved' && 
+                             reviewsMap[assignment.id]?.official_total_score !== undefined && 
+                             reviewsMap[assignment.id]?.official_total_score !== scoresMap[assignment.id].total_score && (
+                              <div className="text-[10px] text-slate-400">
+                                Điểm live hiện tại: {formatScore(scoresMap[assignment.id].total_score)}
+                              </div>
+                            )}
                           </div>
                           <div className="space-y-1">
                             <div className="text-xs font-medium text-slate-500">Tổng trọng số</div>
@@ -363,7 +497,11 @@ export const StaffMyKpiView: React.FC = () => {
                                 const primaryBinding = (item as any).bindings?.find((b: any) => b.binding_key === 'primary' && b.is_active);
                                 const isManual = actual?.source_type === 'manual' || primaryBinding?.source_type === 'manual';
                                 const inputRole = primaryBinding?.source_config?.input_role || 'assignee';
-                                const hasInputPermission = isManual && (assignment.status === 'assigned' || assignment.status === 'active') && inputRole !== 'manager';
+                                const hasInputPermission = isManual && 
+                                  (assignment.status === 'assigned' || assignment.status === 'active') && 
+                                  reviewsMap[assignment.id]?.status !== 'approved' && 
+                                  assignment.status !== 'locked' &&
+                                  inputRole !== 'manager';
 
                                 return (
                                   <tr key={item.id} className="hover:bg-slate-50/60">

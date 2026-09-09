@@ -15,13 +15,14 @@ import {
   Edit3, 
   Clock, 
   Info,
-  CheckCircle2
-, Calculator
+  CheckCircle2,
+  Calculator
 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { kpiAssignmentService } from '../../../services/kpi-assignment.service';
 import { kpiActualService, KpiActualResolverResult } from '../../../services/kpiActualService';
 import { kpiScoringService, KpiScoringResult, KpiAssignmentScoreResult } from '../../../services/kpiScoringService';
+import { kpiReviewService } from '../../../services/kpiReviewService';
 import { KpiScoreTraceDrawer } from './KpiScoreTraceDrawer';
 import { formatPercent, formatScore, formatScoreStatus } from '../../../utils/kpiScoreFormatter';
 import { KpiManualActualModal } from './KpiManualActualModal';
@@ -29,10 +30,15 @@ import { KpiActualTraceDrawer } from './KpiActualTraceDrawer';
 import { 
   KpiAssignment, 
   KpiAssignmentItem, 
-  KpiAssignmentStatus 
+  KpiAssignmentStatus,
+  KpiAssignmentReview
 } from '../../../types/kpi';
 import { formatTargetConfig } from '../../../utils/kpiTargetFormatter';
 import { KpiAssignmentTargetEditModal } from './KpiAssignmentTargetEditModal';
+import { KpiReviewSection } from './KpiReviewSection';
+import { KpiReviewReturnModal } from './KpiReviewReturnModal';
+import { KpiReviewApproveModal } from './KpiReviewApproveModal';
+import { KpiLockModal } from './KpiLockModal';
 
 interface KpiAssignmentDetailViewProps {
   assignmentId: string;
@@ -45,13 +51,14 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
   onBack,
   onRefreshList,
 }) => {
-  const { user } = useAuth();
+  const { user, systemRole } = useAuth();
 
   const [assignment, setAssignment] = useState<KpiAssignment | null>(null);
   const [items, setItems] = useState<KpiAssignmentItem[]>([]);
   const [actuals, setActuals] = useState<Record<string, KpiActualResolverResult>>({});
   const [assignmentScore, setAssignmentScore] = useState<KpiAssignmentScoreResult | null>(null);
   const [itemScores, setItemScores] = useState<Record<string, KpiScoringResult>>({});
+  const [review, setReview] = useState<KpiAssignmentReview | null>(null);
   const [scoreTraceItemId, setScoreTraceItemId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +70,11 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
   const [showActivateConfirmModal, setShowActivateConfirmModal] = useState<boolean>(false);
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState<boolean>(false);
   const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState<boolean>(false);
+  const [showReturnModal, setShowReturnModal] = useState<boolean>(false);
+  const [showApproveModal, setShowApproveModal] = useState<boolean>(false);
+  const [showLockModal, setShowLockModal] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isReviewProcessing, setIsReviewProcessing] = useState<boolean>(false);
   
   const [manualActualModal, setManualActualModal] = useState<{
     isOpen: boolean;
@@ -82,11 +93,12 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
     setLoading(true);
     setError(null);
     try {
-      const [detailRes, itemsRes, actualsRes, scoreRes] = await Promise.all([
+      const [detailRes, itemsRes, actualsRes, scoreRes, reviewRes] = await Promise.all([
         kpiAssignmentService.getAssignmentDetail(assignmentId),
         kpiAssignmentService.getAssignmentItems(assignmentId),
         kpiActualService.resolveAssignmentActuals(assignmentId),
-        kpiScoringService.resolveAssignmentScore(assignmentId)
+        kpiScoringService.resolveAssignmentScore(assignmentId),
+        kpiReviewService.getReviewByAssignment(assignmentId)
       ]);
 
       if (detailRes.error) throw detailRes.error;
@@ -110,11 +122,112 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
         }, {} as Record<string, KpiScoringResult>);
         setItemScores(sMap);
       }
+      if (reviewRes.data) {
+        setReview(reviewRes.data);
+      } else {
+        setReview(null);
+      }
     } catch (err: any) {
       console.error('[KpiAssignmentDetail] Load error:', err);
       setError(err.message || 'Không thể tải thông tin chi tiết giao KPI');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const canManage = systemRole === 'admin' || systemRole === 'manager' || assignment?.created_by === user?.id || assignment?.assigned_by === user?.id;
+
+  const handleStartReview = async () => {
+    if (!assignment) return;
+    setError(null);
+    setSuccessMessage(null);
+    setIsReviewProcessing(true);
+    try {
+      const { data, error: sErr } = await kpiReviewService.startReview(assignment.id);
+      if (sErr) throw sErr;
+      setSuccessMessage('Đã bắt đầu tiến trình đánh giá KPI.');
+      await loadData();
+    } catch (err: any) {
+      console.error('[handleStartReview] Error:', err);
+      setError(kpiReviewService.mapReviewError(err));
+    } finally {
+      setIsReviewProcessing(false);
+    }
+  };
+
+  const handleReturnReview = async (note: string) => {
+    if (!review?.id) return;
+    setError(null);
+    setSuccessMessage(null);
+    setIsReviewProcessing(true);
+    try {
+      const { data, error: rErr } = await kpiReviewService.returnReview(review.id, note);
+      if (rErr) throw rErr;
+      setShowReturnModal(false);
+      setSuccessMessage('Đã gửi yêu cầu điều chỉnh kết quả KPI.');
+      await loadData();
+    } catch (err: any) {
+      console.error('[handleReturnReview] Error:', err);
+      setError(kpiReviewService.mapReviewError(err));
+    } finally {
+      setIsReviewProcessing(false);
+    }
+  };
+
+  const handleResubmitReview = async () => {
+    if (!review?.id) return;
+    setError(null);
+    setSuccessMessage(null);
+    setIsReviewProcessing(true);
+    try {
+      const { data, error: rErr } = await kpiReviewService.resubmitReview(review.id);
+      if (rErr) throw rErr;
+      setSuccessMessage('Đã gửi lại đánh giá thành công.');
+      await loadData();
+    } catch (err: any) {
+      console.error('[handleResubmitReview] Error:', err);
+      setError(kpiReviewService.mapReviewError(err));
+    } finally {
+      setIsReviewProcessing(false);
+    }
+  };
+
+  const handleApproveReview = async (note?: string) => {
+    if (!review?.id) return;
+    setError(null);
+    setSuccessMessage(null);
+    setIsReviewProcessing(true);
+    try {
+      const { data, error: aErr } = await kpiReviewService.approveReview(review.id, note);
+      if (aErr) throw aErr;
+      setShowApproveModal(false);
+      setSuccessMessage('Đã phê duyệt kết quả KPI thành công.');
+      await loadData();
+    } catch (err: any) {
+      console.error('[handleApproveReview] Error:', err);
+      setError(kpiReviewService.mapReviewError(err));
+    } finally {
+      setIsReviewProcessing(false);
+    }
+  };
+
+  const handleLockReview = async (note?: string) => {
+    if (!review?.id) return;
+    setError(null);
+    setSuccessMessage(null);
+    setIsReviewProcessing(true);
+    try {
+      const { data, error: lErr } = await kpiReviewService.lockAssignmentReview(review.id, note);
+      if (lErr) throw lErr;
+      setShowLockModal(false);
+      setSuccessMessage('Đã khóa kết quả KPI chính thức thành công. Kết quả này là bất biến.');
+      await loadData();
+      if (onRefreshList) onRefreshList();
+    } catch (err: any) {
+      console.error('[handleLockReview] Error:', err);
+      setError(kpiReviewService.mapReviewError(err));
+    } finally {
+      setIsReviewProcessing(false);
     }
   };
 
@@ -443,42 +556,20 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
       )}
 
       
-      {/* Scoring Summary */}
-      {assignmentScore && (
-        <div className="rounded-2xl bg-white border border-slate-200/80 shadow-2xs overflow-hidden">
-          <div className="bg-slate-50 border-b border-slate-100 px-6 py-4 flex items-center justify-between">
-            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Calculator className="h-5 w-5 text-indigo-500" />
-              Kết quả đánh giá
-            </h3>
-            {assignmentScore.status === 'partial' && (
-              <span className="text-xs font-medium text-amber-600 flex items-center gap-1.5 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200/50">
-                <AlertCircle className="w-3.5 h-3.5" />
-                Một số KPI chưa có dữ liệu nên điểm hiện tại chưa phải kết quả cuối cùng.
-              </span>
-            )}
-          </div>
-          <div className="p-6 grid grid-cols-2 md:grid-cols-4 gap-6">
-            <div className="space-y-1">
-              <div className="text-sm font-medium text-slate-500">Điểm KPI tạm tính</div>
-              <div className="text-3xl font-bold text-indigo-600">
-                {formatScore(assignmentScore.total_score)} <span className="text-base font-medium text-slate-400">/ 100</span>
-              </div>
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium text-slate-500">Tổng trọng số</div>
-              <div className="text-xl font-bold text-slate-900">{assignmentScore.total_weight}%</div>
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium text-slate-500">Đã tính</div>
-              <div className="text-xl font-bold text-emerald-600">{assignmentScore.scored_weight}%</div>
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium text-slate-500">Chưa tính</div>
-              <div className="text-xl font-bold text-amber-500">{assignmentScore.unscored_weight}%</div>
-            </div>
-          </div>
-        </div>
+      {/* KPI Review & Scoring Section */}
+      {assignment && (
+        <KpiReviewSection
+          assignment={assignment}
+          review={review}
+          assignmentScore={assignmentScore}
+          canManage={canManage}
+          isProcessing={isReviewProcessing}
+          onStartReview={handleStartReview}
+          onOpenReturnModal={() => setShowReturnModal(true)}
+          onOpenApproveModal={() => setShowApproveModal(true)}
+          onResubmitReview={handleResubmitReview}
+          onOpenLockModal={() => setShowLockModal(true)}
+        />
       )}
 
       {/* Items Section */}
@@ -857,6 +948,32 @@ export const KpiAssignmentDetailView: React.FC<KpiAssignmentDetailViewProps> = (
           onClose={() => setTraceDrawerItemId(null)}
         />
       )}
+
+      {/* Review Workflow Modals */}
+      <KpiReviewReturnModal
+        isOpen={showReturnModal}
+        onClose={() => setShowReturnModal(false)}
+        onConfirm={handleReturnReview}
+        isProcessing={isReviewProcessing}
+      />
+
+      <KpiReviewApproveModal
+        isOpen={showApproveModal}
+        onClose={() => setShowApproveModal(false)}
+        onConfirm={handleApproveReview}
+        isProcessing={isReviewProcessing}
+        currentScore={assignmentScore?.total_score || 0}
+      />
+
+      <KpiLockModal
+        isOpen={showLockModal}
+        onClose={() => setShowLockModal(false)}
+        onConfirm={handleLockReview}
+        isProcessing={isReviewProcessing}
+        officialScore={review?.official_total_score ?? assignment?.config?.official_result?.total_score ?? null}
+        reviewerName={review?.reviewer_name}
+        approvedAt={review?.approved_at}
+      />
     </div>
   );
 };
