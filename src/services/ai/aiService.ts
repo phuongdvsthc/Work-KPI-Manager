@@ -94,9 +94,10 @@ export const aiService = {
     }
 
     const context_metadata = {
-      scope_type: req.context?.authorizedScope ? 'organization' : 'unknown',
-      unit_count: req.context?.authorizedScope?.unitIds?.length || 0,
-      has_period: !!req.context?.period
+      scope_type: req.context?.scope?.scopeType || 'unknown',
+      unit_count: req.context?.scope?.unitIds?.length || 0,
+      has_period: !!req.context?.request?.periodId,
+      truncated: req.context?.metadata?.truncated || false
     };
 
     const audit = await aiAuditService.startRequest(supabaseAdmin, {
@@ -166,7 +167,7 @@ async generateSummary(supabaseAdmin: any, req: AIContextRequest): Promise<AIStru
 
       // 2. Gather Authorized Context
       const contextData = await aiContextService.buildContext(supabaseAdmin, req);
-      requestTimestamp = contextData.timestamp;
+      requestTimestamp = contextData.request?.generatedAt || requestTimestamp;
 
       // 3. Resolve Prompt
       const promptDef = aiPromptRegistry['kpi_summary_v1'];

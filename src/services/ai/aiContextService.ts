@@ -1,44 +1,86 @@
-import { AIContextRequest, AIContextData } from '../../types/ai';
+import { AIContextRequest, AIContextData, AIContextModule } from '../../types/ai';
+import { AIContextError } from '../../types/ai_errors';
+import { aiContextScopeService } from './aiContextScopeService';
+import { aiContextSanitizer } from './aiContextSanitizer';
 
-/**
- * AI Context Layer
- * 
- * Responsible for gathering and sanitizing authorized business data 
- * BEFORE passing it to the AI Provider.
- * 
- * Rule: MUST reuse existing read-models and scope resolvers (e.g. resolveManagerScopeUnits).
- * Rule: MUST NEVER construct unauthorized root-level data dumps.
- */
+const AI_CONTEXT_MAX_RECORDS = 50;
+
 export const aiContextService = {
-  /**
-   * Resolves the context based on the request constraints.
-   * This function should be executed on the authenticated backend.
-   */
   async buildContext(supabaseAdmin: any, req: AIContextRequest): Promise<AIContextData> {
     // 1. Resolve Authorization Scope
-    // For example: await resolveManagerScopeUnits(supabaseAdmin, req.userId, req.userRole);
-    const authorizedUnitIds: string[] = []; // Placeholder
+    const { actor, scope } = await aiContextScopeService.resolve(supabaseAdmin, req.userId, req.unitId);
 
-    // 2. Fetch specific business artifacts based on featureKey
-    let assignments = [];
-    let tasks = [];
-    let metrics = [];
-
-    // Switch logic based on featureKey (e.g. kpi_summary vs task_breakdown)
-    if (req.featureKey === 'kpi_summary') {
-      // Use kpiDashboardService backend equivalents or direct RPCs restricted by scope
+    // 2. Validate Request
+    if (req.entityIds && req.entityIds.length > 50) {
+      throw new AIContextError('AI_CONTEXT_EXCESS_ENTITY_IDS', 'Too many entity IDs requested');
     }
 
-    // 3. Construct Sanitized Context Map
-    return {
-      authorizedScope: {
-        unitIds: authorizedUnitIds,
-        isExecutive: req.userRole === 'executive'
+    if (req.dateFrom && req.dateTo) {
+      const msDiff = new Date(req.dateTo).getTime() - new Date(req.dateFrom).getTime();
+      if (msDiff < 0) {
+         throw new AIContextError('AI_CONTEXT_INVALID_DATE_RANGE', 'dateFrom must be before dateTo');
+      }
+      if (msDiff > 365 * 24 * 60 * 60 * 1000) {
+         throw new AIContextError('AI_CONTEXT_INVALID_DATE_RANGE', 'Date range cannot exceed 1 year');
+      }
+    }
+    
+    if (req.dateFrom && req.dateTo && new Date(req.dateFrom) > new Date(req.dateTo)) {
+      throw new AIContextError('AI_CONTEXT_INVALID_DATE_RANGE', 'dateFrom must be before dateTo');
+    }
+
+    const modulesToLoad = req.modules || [];
+    const supportedModules = ['daily_report', 'task', 'metric', 'kpi', 'dashboard'];
+    
+    for (const mod of modulesToLoad) {
+      if (!supportedModules.includes(mod)) {
+        throw new AIContextError('AI_CONTEXT_MODULE_UNSUPPORTED', `Module ${mod} is not supported.`);
+      }
+    }
+
+    // 3. Initialize Context Envelope
+    const envelope: AIContextData = {
+      request: {
+        featureKey: req.featureKey,
+        generatedAt: new Date().toISOString(),
+        periodId: req.periodId,
+        dateFrom: req.dateFrom,
+        dateTo: req.dateTo,
+        resultMode: req.resultMode
       },
-      kpiAssignments: assignments,
-      tasks: tasks,
-      metrics: metrics,
-      timestamp: new Date().toISOString()
+      actor,
+      scope,
+      data: {},
+      metadata: {
+        recordCounts: {},
+        truncated: false,
+        warnings: []
+      }
     };
+
+    // 4. Fetch specific business artifacts based on requested modules
+    // This is a skeleton. Actual business module calls will go here in B2-B4.
+    
+    if (modulesToLoad.includes('daily_report')) {
+      const { aiDailyReportContextService } = require('./aiDailyReportContextService');
+      await aiDailyReportContextService.buildDailyReportContext(supabaseAdmin, req, envelope);
+    }
+
+    if (modulesToLoad.includes('task')) {
+      const { aiTaskContextService } = require('./aiTaskContextService');
+      await aiTaskContextService.buildTaskContext(supabaseAdmin, req, envelope);
+    }
+
+    if (modulesToLoad.includes('kpi')) {
+      const { aiKpiContextService } = require('./aiKpiContextService');
+      await aiKpiContextService.buildKpiContext(supabaseAdmin, req, envelope);
+    }
+    
+    
+
+    // 5. Sanitize
+    envelope.data = aiContextSanitizer.sanitizeContext(envelope.data);
+
+    return envelope;
   }
 };

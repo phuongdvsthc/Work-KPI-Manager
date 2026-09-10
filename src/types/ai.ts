@@ -3,28 +3,52 @@
  * Defines the strict boundaries between business data, AI contexts, and external AI providers.
  */
 
+export type AIContextModule = 'daily_report' | 'task' | 'metric' | 'kpi' | 'dashboard';
+
 export interface AIContextRequest {
+  featureKey: string;
   userId: string;
-  userRole: string;
-  targetUnitId?: string;
-  targetPeriodId?: string;
-  targetAssignmentIds?: string[];
-  targetTaskIds?: string[];
-  featureKey: 'kpi_summary' | 'risk_detection' | 'task_breakdown';
+  periodId?: string;
+  unitId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  entityIds?: string[];
+  resultMode?: 'all' | 'live' | 'official';
+  modules?: AIContextModule[];
 }
 
 export interface AIContextData {
-  authorizedScope: {
-    unitIds: string[];
-    isExecutive: boolean;
+  request: {
+    featureKey: string;
+    generatedAt: string;
+    periodId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    resultMode?: string;
   };
-  period?: any;
-  kpiAssignments?: any[];
-  tasks?: any[];
-  metrics?: any[];
-  timestamp: string;
-  userPrompt?: string;
-}
+  actor: {
+    userId: string;
+    role: string;
+    primaryUnitId?: string;
+  };
+  scope: {
+    scopeType: string;
+    unitIds: string[];
+    systemWide: boolean;
+  };
+  data: {
+    dailyReports?: any;
+    tasks?: any;
+    metrics?: any;
+    kpis?: any;
+    dashboard?: any;
+  };
+  metadata: {
+    recordCounts: Record<string, number>;
+    truncated: boolean;
+    warnings: string[];
+  };
+};
 
 export interface AIProviderOptions {
   modelAlias?: string;
