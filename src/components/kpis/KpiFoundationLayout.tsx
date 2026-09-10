@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Target, Calendar, ListTree, BookOpen, Layers, Send, UserCheck } from 'lucide-react';
+import { Target, Calendar, ListTree, BookOpen, Layers, Send, UserCheck, LayoutDashboard } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { KpiManagerDashboardView } from './dashboard/KpiManagerDashboardView';
 import { KpiPeriodView } from './periods/KpiPeriodView';
 import { KpiObjectiveView } from './objectives/KpiObjectiveView';
 import { KpiDefinitionView } from './definitions/KpiDefinitionView';
@@ -8,19 +10,24 @@ import { KpiAssignmentListView } from './assignments/KpiAssignmentListView';
 import { StaffMyKpiView } from './assignments/StaffMyKpiView';
 
 export const KpiFoundationLayout: React.FC = () => {
+  const { systemRole, isAdmin } = useAuth();
+  const canAccessDashboard = systemRole === 'manager' || systemRole === 'admin' || systemRole === 'executive' || isAdmin;
+
   const getInitialTab = () => {
     const hash = window.location.hash.replace('#/', '');
+    if (hash.startsWith('kpis/dashboard') || hash.startsWith('kpis/overview')) return 'dashboard';
     if (hash.startsWith('kpis/assignments')) return 'assignments';
     if (hash.startsWith('kpis/periods')) return 'periods';
     if (hash.startsWith('kpis/objectives')) return 'objectives';
     if (hash.startsWith('kpis/definitions')) return 'definitions';
     if (hash.startsWith('kpis/templates')) return 'templates';
     if (hash.startsWith('kpis/my-kpi')) return 'my-kpi';
-    return 'assignments';
+    // Default for manager/admin is dashboard, otherwise assignments
+    return canAccessDashboard ? 'dashboard' : 'assignments';
   };
 
   const [activeTab, setActiveTab] = useState<
-    'assignments' | 'periods' | 'objectives' | 'definitions' | 'templates' | 'my-kpi'
+    'dashboard' | 'assignments' | 'periods' | 'objectives' | 'definitions' | 'templates' | 'my-kpi'
   >(getInitialTab);
 
   useEffect(() => {
@@ -29,10 +36,10 @@ export const KpiFoundationLayout: React.FC = () => {
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
+  }, [canAccessDashboard]);
 
   const handleTabChange = (
-    tab: 'assignments' | 'periods' | 'objectives' | 'definitions' | 'templates' | 'my-kpi'
+    tab: 'dashboard' | 'assignments' | 'periods' | 'objectives' | 'definitions' | 'templates' | 'my-kpi'
   ) => {
     setActiveTab(tab);
     window.location.hash = `#/kpis/${tab}`;
@@ -42,9 +49,24 @@ export const KpiFoundationLayout: React.FC = () => {
     <div className="space-y-4">
       {/* KPI Foundation Navigation */}
       <div className="flex border-b border-slate-200 mb-6 overflow-x-auto">
+        {canAccessDashboard && (
+          <button
+            id="kpi-nav-dashboard-tab"
+            onClick={() => handleTabChange('dashboard')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'dashboard'
+                ? 'text-indigo-600 border-b-2 border-indigo-600 font-semibold'
+                : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'
+            }`}
+          >
+            <LayoutDashboard className="h-4 w-4" />
+            Tổng quan
+          </button>
+        )}
         <button
+          id="kpi-nav-assignments-tab"
           onClick={() => handleTabChange('assignments')}
-          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors cursor-pointer ${
             activeTab === 'assignments'
               ? 'text-indigo-600 border-b-2 border-indigo-600 font-semibold'
               : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'
@@ -110,14 +132,18 @@ export const KpiFoundationLayout: React.FC = () => {
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-6">
-        {activeTab === 'assignments' && <KpiAssignmentListView />}
-        {activeTab === 'periods' && <KpiPeriodView />}
-        {activeTab === 'objectives' && <KpiObjectiveView />}
-        {activeTab === 'definitions' && <KpiDefinitionView />}
-        {activeTab === 'templates' && <KpiTemplateView />}
-        {activeTab === 'my-kpi' && <StaffMyKpiView />}
-      </div>
+      {activeTab === 'dashboard' && canAccessDashboard ? (
+        <KpiManagerDashboardView onNavigateToAssignments={() => handleTabChange('assignments')} />
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-6">
+          {activeTab === 'assignments' && <KpiAssignmentListView />}
+          {activeTab === 'periods' && <KpiPeriodView />}
+          {activeTab === 'objectives' && <KpiObjectiveView />}
+          {activeTab === 'definitions' && <KpiDefinitionView />}
+          {activeTab === 'templates' && <KpiTemplateView />}
+          {activeTab === 'my-kpi' && <StaffMyKpiView />}
+        </div>
+      )}
     </div>
   );
 };

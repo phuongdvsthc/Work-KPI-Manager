@@ -4178,6 +4178,10 @@ async function startServer() {
 
   // Helper: Resolve Manager Scope Organization Units
   async function resolveManagerScopeUnits(supabaseAdmin: any, userId: string, userRole: string) {
+    if (userRole !== 'admin' && userRole !== 'executive' && userRole !== 'manager') {
+      return null;
+    }
+
     const { data: allUnits } = await supabaseAdmin
       .from('organization_units')
       .select('id, name, code, parent_id, unit_type, is_active')
@@ -6144,6 +6148,1273 @@ app.post(['/api/rpc/kpi_lock_assignment_review', '/rest/v1/rpc/kpi_lock_assignme
 });
 
 // ALL /api/rpc/kpi_get_official_assignment_result
+
+// ==========================================
+// V0.4.6-A KPI DASHBOARD AGGREGATION APIs
+// ==========================================
+
+function getDescendantUnitIds(allUnits: any[], rootUnitId: string): Set<string> {
+  const scopeUnitIds = new Set<string>([rootUnitId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const u of allUnits) {
+      if (u.parent_id && scopeUnitIds.has(u.parent_id) && !scopeUnitIds.has(u.id)) {
+        scopeUnitIds.add(u.id);
+        added = true;
+      }
+    }
+  }
+  return scopeUnitIds;
+}
+
+function getAssignmentAttributedUnitId(a: {
+  assignee_type?: string | null;
+  assignee_unit_id_snapshot?: string | null;
+  assignee_organization_unit_id?: string | null;
+}): string | null {
+  if (a.assignee_type === 'individual') {
+    return a.assignee_unit_id_snapshot || a.assignee_organization_unit_id || null;
+  } else {
+    return a.assignee_organization_unit_id || a.assignee_unit_id_snapshot || null;
+  }
+}
+
+async function resolveLiveScoresBatch(
+  supabaseAdmin: any,
+  liveAssignments: any[]
+): Promise<Map<string, { total_score: number; status: string; total_weight: number; scored_weight: number }>> {
+  const liveScoreMap = new Map<string, { total_score: number; status: string; total_weight: number; scored_weight: number }>();
+  if (!liveAssignments || liveAssignments.length === 0) return liveScoreMap;
+
+  const liveAssignmentIds = liveAssignments.map(a => a.id);
+
+  const { data: allItems, error: itemsErr } = await supabaseAdmin
+    .from('kpi_assignment_items')
+    .select('*, definition:kpi_definition_id(measurement_type, direction, default_scoring_method)')
+    .in('assignment_id', liveAssignmentIds);
+
+  if (itemsErr) throw itemsErr;
+
+  const itemsByAssignment = new Map<string, any[]>();
+  const allItemIds: string[] = [];
+
+  for (const it of (allItems || [])) {
+    allItemIds.push(it.id);
+    const list = itemsByAssignment.get(it.assignment_id) || [];
+    list.push(it);
+    itemsByAssignment.set(it.assignment_id, list);
+  }
+
+  const actualsMap = new Map<string, number>();
+  if (allItemIds.length > 0) {
+    const { data: actualEntries, error: actErr } = await supabaseAdmin
+      .from('kpi_manual_actual_entries')
+      .select('assignment_item_id, value_numeric, entered_at')
+      .in('assignment_item_id', allItemIds)
+      .order('entered_at', { ascending: false });
+
+    if (!actErr && actualEntries) {
+      for (const entry of actualEntries) {
+        if (!actualsMap.has(entry.assignment_item_id) && entry.value_numeric !== null && entry.value_numeric !== undefined) {
+          actualsMap.set(entry.assignment_item_id, Number(entry.value_numeric));
+        }
+      }
+    }
+  }
+
+  for (const a of liveAssignments) {
+    const items = itemsByAssignment.get(a.id) || [];
+    let tw = 0;
+    let sw = 0;
+    let ts = 0;
+    let hasMissing = false;
+
+    for (const it of items) {
+      const weight = Number(it.weight) || 0;
+      tw += weight;
+
+      if (actualsMap.has(it.id)) {
+        sw += weight;
+        const target = Number(it.target_config?.target_value) || 1;
+        const actual = actualsMap.get(it.id)!;
+        const direction = it.definition?.direction || 'higher_is_better';
+        let rawAch = 0;
+        if (direction === 'lower_is_better') {
+          rawAch = actual === 0 ? 100 : (target / actual) * 100;
+        } else if (direction === 'exact_target') {
+          rawAch = actual === target ? 100 : 0;
+        } else {
+          rawAch = (actual / target) * 100;
+        }
+
+        let ach = rawAch;
+        if (it.cap_percent !== null && it.cap_percent !== undefined) {
+          ach = Math.min(rawAch, Number(it.cap_percent));
+        }
+
+        let rawScore = ach;
+        const scoringConfig = it.scoring_config;
+        const method = it.definition?.default_scoring_method || 'linear';
+        if (method === 'bands' && Array.isArray(scoringConfig?.bands)) {
+          let matchedBand: any = null;
+          for (const b of scoringConfig.bands) {
+            const bMin = Number(b.min_percent);
+            if (ach >= bMin) {
+              if (!matchedBand || bMin > Number(matchedBand.min_percent)) {
+                matchedBand = b;
+              }
+            }
+          }
+          rawScore = matchedBand ? Number(matchedBand.score) : 0;
+        }
+
+        const weightedScore = (rawScore * weight) / 100.0;
+        ts += weightedScore;
+      } else {
+        hasMissing = true;
+      }
+    }
+
+    let st = 'complete';
+    if (sw === 0) {
+      st = 'not_scored';
+    } else if (hasMissing || sw < tw) {
+      st = 'partial';
+    }
+
+    liveScoreMap.set(a.id, {
+      total_score: Math.round(ts * 10000) / 10000,
+      status: st,
+      total_weight: tw,
+      scored_weight: sw
+    });
+  }
+
+  return liveScoreMap;
+}
+
+async function resolveOfficialScoresBatch(
+  supabaseAdmin: any,
+  officialAssignments: any[]
+): Promise<Map<string, { total_score: number | null; status: string }>> {
+  const officialScoreMap = new Map<string, { total_score: number | null; status: string }>();
+  if (!officialAssignments || officialAssignments.length === 0) return officialScoreMap;
+
+  const officialIds = officialAssignments.map(a => a.id);
+  const { data: reviews } = await supabaseAdmin
+    .from('kpi_assignment_reviews')
+    .select('id, assignment_id, status, official_total_score')
+    .in('assignment_id', officialIds);
+
+  const revMap = new Map<string, any>();
+  (reviews || []).forEach((r: any) => revMap.set(r.assignment_id, r));
+
+  const reviewIds = (reviews || []).map((r: any) => r.id);
+  let itemReviews: any[] = [];
+  if (reviewIds.length > 0) {
+    const { data: ir } = await supabaseAdmin
+      .from('kpi_assignment_item_reviews')
+      .select('review_id, final_weighted_score, final_raw_score')
+      .in('review_id', reviewIds);
+    itemReviews = ir || [];
+  }
+
+  for (const a of officialAssignments) {
+    const rev = revMap.get(a.id);
+    let officialScore: number | null = null;
+
+    if (rev?.official_total_score !== undefined && rev?.official_total_score !== null) {
+      officialScore = Number(rev.official_total_score);
+    } else if (a.config?.official_result?.total_score !== undefined && a.config?.official_result?.total_score !== null) {
+      officialScore = Number(a.config.official_result.total_score);
+    } else if (a.config?.review?.official_total_score !== undefined && a.config?.review?.official_total_score !== null) {
+      officialScore = Number(a.config.review.official_total_score);
+    } else if (rev?.id) {
+      const snaps = itemReviews.filter((ir: any) => ir.review_id === rev.id);
+      if (snaps.length > 0) {
+        officialScore = snaps.reduce((sum: number, it: any) => sum + (Number(it.final_weighted_score) || 0), 0);
+      }
+    } else if (Array.isArray(a.config?.review_items) && a.config.review_items.length > 0) {
+      officialScore = a.config.review_items.reduce((sum: number, it: any) => sum + (Number(it.final_weighted_score) || 0), 0);
+    }
+
+    officialScoreMap.set(a.id, {
+      total_score: officialScore !== null ? Math.round(officialScore * 10000) / 10000 : null,
+      status: officialScore !== null ? 'complete' : 'not_scored'
+    });
+  }
+
+  return officialScoreMap;
+}
+
+app.all(['/api/rpc/kpi_get_dashboard_summary', '/api/kpi/dashboard/summary', '/rest/v1/rpc/kpi_get_dashboard_summary'], authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const periodId = (req.query.period_id || req.query.p_period_id || req.body?.period_id || req.body?.p_period_id) as string;
+    const unitId = (req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id) as string;
+    const assignmentStatus = (req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status) as string;
+    const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+    const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+
+    if (!periodId) return res.status(400).json({ error: 'Missing period_id' });
+
+    const supabaseAdmin = res.locals.supabaseAdmin || getSupabaseAdminClient(req);
+    const userId = res.locals.user.id;
+    const profile = res.locals.profile;
+
+    const userRole = profile?.system_role;
+    if (userRole !== 'manager' && userRole !== 'admin' && userRole !== 'executive') {
+      return res.status(403).json({ error: 'access_denied', message: 'Staff users are not authorized to access Manager Dashboard' });
+    }
+
+    const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, userRole);
+    if (!scopeData) return res.status(403).json({ error: 'access_denied' });
+    let allowedUnitIds = scopeData.scopeUnitIds;
+
+    if (unitId) {
+      if (!allowedUnitIds.has(unitId)) {
+        return res.status(403).json({ error: 'access_denied', message: 'Requested unit is outside your scope' });
+      }
+      const { data: allUnits } = await supabaseAdmin.from('organization_units').select('id, parent_id');
+      const requestedScope = getDescendantUnitIds(allUnits || [], unitId);
+      allowedUnitIds = new Set([...allowedUnitIds].filter(x => requestedScope.has(x)));
+    }
+
+    const allowedUnitsArr = Array.from(allowedUnitIds);
+    if (allowedUnitsArr.length === 0) {
+      return res.json({
+        period_id: periodId,
+        assignment_count: 0,
+        live_assignment_count: 0,
+        official_assignment_count: 0,
+        active_count: 0,
+        closed_count: 0,
+        locked_count: 0,
+        complete_count: 0,
+        partial_count: 0,
+        unscored_count: 0,
+        no_data_count: 0,
+        live_average_score: null,
+        official_average_score: null,
+        live_scored_count: 0,
+        official_scored_count: 0
+      });
+    }
+
+    let query = supabaseAdmin.from('kpi_assignments')
+      .select('id, period_id, status, assignee_type, assignee_user_id, assignee_organization_unit_id, assignee_unit_id_snapshot, config')
+      .eq('period_id', periodId)
+      .or(`assignee_unit_id_snapshot.in.(${allowedUnitsArr.join(',')}),assignee_organization_unit_id.in.(${allowedUnitsArr.join(',')})`);
+
+    if (assigneeType && assigneeType !== 'all') {
+      query = query.eq('assignee_type', assigneeType);
+    }
+
+    if (assignmentStatus && assignmentStatus !== 'all') {
+      query = query.eq('status', assignmentStatus);
+    } else {
+      query = query.not('status', 'eq', 'draft');
+    }
+
+    if (resultMode === 'live') {
+      query = query.not('status', 'eq', 'locked');
+    } else if (resultMode === 'official') {
+      query = query.eq('status', 'locked');
+    }
+
+    const { data: rawAssignments, error } = await query;
+    if (error) throw error;
+
+    // Deduplicate assignments by id (A2.6 join safety) AND filter strictly by attributed unit
+    const assignmentMap = new Map<string, any>();
+    for (const a of (rawAssignments || [])) {
+      if (assignmentMap.has(a.id)) continue;
+      const targetUnitId = getAssignmentAttributedUnitId(a);
+      if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) continue;
+      assignmentMap.set(a.id, a);
+    }
+    const assignments = Array.from(assignmentMap.values());
+
+    const liveAssignments = assignments.filter(a => a.status !== 'locked');
+    const officialAssignments = assignments.filter(a => a.status === 'locked');
+
+    // Batch resolve scores (No N+1 queries)
+    const liveScoreMap = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
+    const officialScoreMap = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+
+    let active_count = 0;
+    let closed_count = 0;
+    let locked_count = 0;
+
+    let complete_count = 0;
+    let partial_count = 0;
+    let unscored_count = 0;
+
+    let liveSum = 0;
+    let live_scored_count = 0;
+
+    let officialSum = 0;
+    let official_scored_count = 0;
+
+    for (const a of assignments) {
+      const isLocked = a.status === 'locked';
+      if (isLocked) {
+        locked_count++;
+      } else if (a.status === 'closed') {
+        closed_count++;
+      } else if (a.status === 'active' || a.status === 'assigned') {
+        active_count++;
+      }
+
+      if (isLocked) {
+        const offRes = officialScoreMap.get(a.id);
+        if (offRes && offRes.total_score !== null) {
+          officialSum += offRes.total_score;
+          official_scored_count++;
+          complete_count++;
+        } else {
+          unscored_count++;
+        }
+      } else {
+        const liveRes = liveScoreMap.get(a.id);
+        if (liveRes) {
+          if (liveRes.status === 'not_scored' || liveRes.scored_weight === 0) {
+            unscored_count++;
+          } else if (liveRes.status === 'partial') {
+            partial_count++;
+            liveSum += liveRes.total_score;
+            live_scored_count++;
+          } else if (liveRes.status === 'complete') {
+            complete_count++;
+            liveSum += liveRes.total_score;
+            live_scored_count++;
+          }
+        } else {
+          unscored_count++;
+        }
+      }
+    }
+
+    const live_average_score = live_scored_count > 0
+      ? Math.round((liveSum / live_scored_count) * 100) / 100
+      : null;
+
+    const official_average_score = official_scored_count > 0
+      ? Math.round((officialSum / official_scored_count) * 100) / 100
+      : null;
+
+    const summaryResponse = {
+      period_id: periodId,
+      assignment_count: assignments.length,
+      live_assignment_count: liveAssignments.length,
+      official_assignment_count: officialAssignments.length,
+      active_count,
+      closed_count,
+      locked_count,
+      complete_count,
+      partial_count,
+      unscored_count,
+      no_data_count: unscored_count,
+      live_average_score,
+      official_average_score,
+      live_scored_count,
+      official_scored_count
+    };
+
+    res.json(summaryResponse);
+  } catch (err: any) {
+    console.error('[API kpi_get_dashboard_summary] Error:', err);
+    res.status(500).json({ error: 'Internal server error processing KPI summary' });
+  }
+});
+
+app.all(['/api/rpc/kpi_get_dashboard_unit_breakdown', '/api/kpi/dashboard/unit-breakdown', '/api/kpi/dashboard/unit_breakdown', '/rest/v1/rpc/kpi_get_dashboard_unit_breakdown'], authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const periodId = (req.query.period_id || req.query.p_period_id || req.body?.period_id || req.body?.p_period_id) as string;
+    const parentUnitId = (req.query.parent_unit_id || req.query.p_parent_unit_id || req.body?.parent_unit_id || req.body?.p_parent_unit_id) as string;
+    const unitId = (req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id) as string;
+    const assignmentStatus = (req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status) as string;
+    const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+    const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+
+    if (!periodId) return res.status(400).json({ error: 'Missing period_id' });
+
+    const supabaseAdmin = res.locals.supabaseAdmin || getSupabaseAdminClient(req);
+    const userId = res.locals.user.id;
+    const profile = res.locals.profile;
+
+    const userRole = profile?.system_role;
+    if (userRole !== 'manager' && userRole !== 'admin' && userRole !== 'executive') {
+      return res.status(403).json({ error: 'access_denied', message: 'Staff users are not authorized to access Manager Dashboard' });
+    }
+
+    const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, userRole);
+    if (!scopeData) return res.status(403).json({ error: 'access_denied' });
+    const allowedUnitIds = scopeData.scopeUnitIds;
+
+    const { data: allUnits } = await supabaseAdmin
+      .from('organization_units')
+      .select('id, name, code, parent_id, unit_type, is_active, sort_order')
+      .order('sort_order', { ascending: true });
+
+    const activeUnits = (allUnits || []).filter((u: any) => u.is_active !== false);
+
+    // If parentUnitId is provided, verify it is inside authorized scope
+    if (parentUnitId && !allowedUnitIds.has(parentUnitId)) {
+      return res.status(403).json({ error: 'access_denied', message: 'Requested parent unit is outside your scope' });
+    }
+
+    if (unitId && !allowedUnitIds.has(unitId)) {
+      return res.status(403).json({ error: 'access_denied', message: 'Requested unit is outside your scope' });
+    }
+
+    let targetUnits = activeUnits.filter((u: any) => allowedUnitIds.has(u.id));
+
+    if (parentUnitId) {
+      targetUnits = targetUnits.filter((u: any) => u.parent_id === parentUnitId);
+    } else if (unitId) {
+      const requestedScope = getDescendantUnitIds(allUnits || [], unitId);
+      targetUnits = targetUnits.filter((u: any) => requestedScope.has(u.id));
+    }
+
+    const targetUnitIds = targetUnits.map((u: any) => u.id as string);
+    if (targetUnitIds.length === 0) {
+      return res.json([]);
+    }
+
+    let query = supabaseAdmin.from('kpi_assignments')
+      .select('id, period_id, status, assignee_type, assignee_user_id, assignee_organization_unit_id, assignee_unit_id_snapshot, config')
+      .eq('period_id', periodId)
+      .or(`assignee_unit_id_snapshot.in.(${targetUnitIds.join(',')}),assignee_organization_unit_id.in.(${targetUnitIds.join(',')})`);
+
+    if (assigneeType && assigneeType !== 'all') {
+      query = query.eq('assignee_type', assigneeType);
+    }
+
+    if (assignmentStatus && assignmentStatus !== 'all') {
+      query = query.eq('status', assignmentStatus);
+    } else {
+      query = query.not('status', 'eq', 'draft');
+    }
+
+    if (resultMode === 'live') {
+      query = query.not('status', 'eq', 'locked');
+    } else if (resultMode === 'official') {
+      query = query.eq('status', 'locked');
+    }
+
+    const { data: rawAssignments, error } = await query;
+    if (error) throw error;
+
+    // Deduplicate assignments by id (A3.7 join safety) and filter strictly by attributed unit
+    const assignmentMap = new Map<string, any>();
+    for (const a of (rawAssignments || [])) {
+      if (assignmentMap.has(a.id)) continue;
+      const targetUnitId = getAssignmentAttributedUnitId(a);
+      if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) continue;
+      assignmentMap.set(a.id, a);
+    }
+    const assignments = Array.from(assignmentMap.values());
+
+    const liveAssignments = assignments.filter(a => a.status !== 'locked');
+    const officialAssignments = assignments.filter(a => a.status === 'locked');
+
+    // Batch resolve scores (No N+1 queries)
+    const liveScoreMap = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
+    const officialScoreMap = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+
+    // Direct unit attribution map
+    const unitDataMap = new Map<string, {
+      assignment_count: number;
+      individual_assignment_count: number;
+      organization_assignment_count: number;
+      live_assignment_count: number;
+      official_assignment_count: number;
+      active_count: number;
+      closed_count: number;
+      locked_count: number;
+      complete_count: number;
+      partial_count: number;
+      unscored_count: number;
+      liveSum: number;
+      live_scored_count: number;
+      officialSum: number;
+      official_scored_count: number;
+    }>();
+
+    for (const u of targetUnits) {
+      unitDataMap.set(u.id, {
+        assignment_count: 0,
+        individual_assignment_count: 0,
+        organization_assignment_count: 0,
+        live_assignment_count: 0,
+        official_assignment_count: 0,
+        active_count: 0,
+        closed_count: 0,
+        locked_count: 0,
+        complete_count: 0,
+        partial_count: 0,
+        unscored_count: 0,
+        liveSum: 0,
+        live_scored_count: 0,
+        officialSum: 0,
+        official_scored_count: 0
+      });
+    }
+
+    for (const a of assignments) {
+      // Historical attribution: individual uses snapshot; organization uses assigned unit
+      const uId = a.assignee_type === 'individual'
+        ? (a.assignee_unit_id_snapshot || a.assignee_organization_unit_id)
+        : (a.assignee_organization_unit_id || a.assignee_unit_id_snapshot);
+
+      if (!uId || !unitDataMap.has(uId)) continue;
+      const uData = unitDataMap.get(uId)!;
+
+      uData.assignment_count++;
+      if (a.assignee_type === 'individual') {
+        uData.individual_assignment_count++;
+      } else if (a.assignee_type === 'organization') {
+        uData.organization_assignment_count++;
+      }
+
+      const isLocked = a.status === 'locked';
+      if (isLocked) {
+        uData.locked_count++;
+        uData.official_assignment_count++;
+
+        const offRes = officialScoreMap.get(a.id);
+        if (offRes && offRes.total_score !== null && offRes.total_score !== undefined) {
+          uData.complete_count++;
+          uData.official_scored_count++;
+          uData.officialSum += offRes.total_score;
+        } else {
+          uData.unscored_count++;
+        }
+      } else {
+        uData.live_assignment_count++;
+        if (a.status === 'closed') {
+          uData.closed_count++;
+        } else {
+          uData.active_count++;
+        }
+
+        const liveRes = liveScoreMap.get(a.id);
+        if (liveRes && liveRes.status === 'complete') {
+          uData.complete_count++;
+          uData.live_scored_count++;
+          uData.liveSum += liveRes.total_score;
+        } else if (liveRes && liveRes.status === 'partial') {
+          uData.partial_count++;
+          uData.live_scored_count++;
+          uData.liveSum += liveRes.total_score;
+        } else {
+          uData.unscored_count++;
+        }
+      }
+    }
+
+    const breakdown = targetUnits.map((u: any) => {
+      const d = unitDataMap.get(u.id)!;
+      const live_average_score = d.live_scored_count > 0
+        ? Math.round((d.liveSum / d.live_scored_count) * 100) / 100
+        : null;
+
+      const official_average_score = d.official_scored_count > 0
+        ? Math.round((d.officialSum / d.official_scored_count) * 100) / 100
+        : null;
+
+      return {
+        unit_id: u.id,
+        unit_name: u.name,
+        unit_code: u.code,
+        parent_unit_id: u.parent_id || null,
+        parent_id: u.parent_id || null,
+
+        assignment_count: d.assignment_count,
+
+        individual_assignment_count: d.individual_assignment_count,
+        organization_assignment_count: d.organization_assignment_count,
+
+        live_assignment_count: d.live_assignment_count,
+        official_assignment_count: d.official_assignment_count,
+
+        active_count: d.active_count,
+        closed_count: d.closed_count,
+        locked_count: d.locked_count,
+
+        complete_count: d.complete_count,
+        partial_count: d.partial_count,
+        unscored_count: d.unscored_count,
+        no_data_count: d.unscored_count,
+
+        live_average_score,
+        official_average_score,
+        overall_average_score: official_average_score !== null ? official_average_score : live_average_score,
+
+        live_scored_count: d.live_scored_count,
+        official_scored_count: d.official_scored_count
+      };
+    });
+
+    res.json(breakdown);
+  } catch (err: any) {
+    console.error('[API kpi_get_dashboard_unit_breakdown] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.all(['/api/rpc/kpi_get_dashboard_assignments', '/api/kpi/dashboard/assignments', '/rest/v1/rpc/kpi_get_dashboard_assignments'], authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const periodId = (req.query.period_id || req.query.p_period_id || req.body?.period_id || req.body?.p_period_id) as string;
+    const unitId = (req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id) as string;
+    const assignmentStatus = (req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status) as string;
+    const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+    const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+    const search = ((req.query.search || req.body?.search || '') as string).trim();
+    const limitRaw = req.query.limit || req.query.p_limit || req.body?.limit || req.body?.p_limit;
+    const offsetRaw = req.query.offset || req.query.p_offset || req.body?.offset || req.body?.p_offset;
+    const limit = limitRaw !== undefined ? Math.max(1, parseInt(limitRaw.toString(), 10)) : 50;
+    const offset = offsetRaw !== undefined ? Math.max(0, parseInt(offsetRaw.toString(), 10)) : 0;
+
+    if (!periodId) return res.status(400).json({ error: 'Missing period_id' });
+
+    const supabaseAdmin = res.locals.supabaseAdmin || getSupabaseAdminClient(req);
+    const userId = res.locals.user.id;
+    const profile = res.locals.profile;
+
+    const userRole = profile?.system_role;
+    if (userRole !== 'manager' && userRole !== 'admin' && userRole !== 'executive') {
+      return res.status(403).json({ error: 'access_denied', message: 'Staff users are not authorized to access Manager Dashboard' });
+    }
+
+    const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, userRole);
+    if (!scopeData) return res.status(403).json({ error: 'access_denied' });
+    let allowedUnitIds = scopeData.scopeUnitIds;
+
+    if (unitId) {
+      if (!allowedUnitIds.has(unitId)) {
+        return res.status(403).json({ error: 'access_denied', message: 'Requested unit is outside your scope' });
+      }
+      const { data: allUnits } = await supabaseAdmin.from('organization_units').select('id, parent_id');
+      const requestedScope = getDescendantUnitIds(allUnits || [], unitId);
+      allowedUnitIds = new Set([...allowedUnitIds].filter(x => requestedScope.has(x)));
+    }
+
+    const allowedUnitsArr = Array.from(allowedUnitIds);
+    if (allowedUnitsArr.length === 0) {
+      if (req.query.format === 'array') return res.json([]);
+      return res.json({ items: [], total_count: 0, limit, offset });
+    }
+
+    let query = supabaseAdmin.from('kpi_assignments')
+      .select(`
+        id,
+        period_id,
+        template_id,
+        template_version_id,
+        assignee_type,
+        assignee_user_id,
+        assignee_organization_unit_id,
+        assignee_unit_id_snapshot,
+        status,
+        effective_from,
+        effective_to,
+        created_at,
+        assigned_at,
+        config,
+        period:period_id(id, name),
+        template:template_id(id, name),
+        assignee_user:assignee_user_id(id, full_name),
+        assignee_unit:assignee_organization_unit_id(id, name),
+        snapshot_unit:assignee_unit_id_snapshot(id, name)
+      `)
+      .eq('period_id', periodId)
+      .or(`assignee_unit_id_snapshot.in.(${allowedUnitsArr.join(',')}),assignee_organization_unit_id.in.(${allowedUnitsArr.join(',')})`);
+
+    if (assigneeType && assigneeType !== 'all') {
+      query = query.eq('assignee_type', assigneeType);
+    }
+
+    if (assignmentStatus && assignmentStatus !== 'all') {
+      query = query.eq('status', assignmentStatus);
+    } else {
+      query = query.not('status', 'eq', 'draft');
+    }
+
+    if (resultMode === 'live') {
+      query = query.not('status', 'eq', 'locked');
+    } else if (resultMode === 'official') {
+      query = query.eq('status', 'locked');
+    }
+
+    query = query.order('created_at', { ascending: false });
+
+    const { data: rawAssignments, error } = await query;
+    if (error) throw error;
+
+    // Deduplicate assignments by id (A4.1 join safety) and strictly filter by Manager unit attribution
+    const assignmentMap = new Map<string, any>();
+    for (const a of (rawAssignments || [])) {
+      if (assignmentMap.has(a.id)) continue;
+
+      const targetUnitId = a.assignee_type === 'individual'
+        ? (a.assignee_unit_id_snapshot || a.assignee_organization_unit_id)
+        : (a.assignee_organization_unit_id || a.assignee_unit_id_snapshot);
+
+      if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) {
+        continue;
+      }
+
+      assignmentMap.set(a.id, a);
+    }
+
+    let filteredAssignments = Array.from(assignmentMap.values());
+
+    if (search) {
+      const s = search.toLowerCase();
+      filteredAssignments = filteredAssignments.filter(a => {
+        const uName = a.assignee_type === 'individual' ? a.snapshot_unit?.name : a.assignee_unit?.name;
+        const userName = a.assignee_user?.full_name || '';
+        return (userName && userName.toLowerCase().includes(s)) ||
+               (uName && uName.toLowerCase().includes(s));
+      });
+    }
+
+    const totalCount = filteredAssignments.length;
+    const pageAssignments = filteredAssignments.slice(offset, offset + limit);
+
+    // Batch resolve reviews for page
+    const pageIds = pageAssignments.map(a => a.id);
+    const revMap = new Map<string, any>();
+    if (pageIds.length > 0) {
+      try {
+        const { data: reviews } = await supabaseAdmin
+          .from('kpi_assignment_reviews')
+          .select('id, assignment_id, status, official_total_score')
+          .in('assignment_id', pageIds);
+        (reviews || []).forEach((r: any) => revMap.set(r.assignment_id, r));
+      } catch {
+        // Fallback to a.config.review if table not available
+      }
+    }
+
+    const liveAssignments = pageAssignments.filter(a => a.status !== 'locked');
+    const officialAssignments = pageAssignments.filter(a => a.status === 'locked');
+
+    // Batch resolve scores (No N+1 queries)
+    const liveScoreMap = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
+    const officialScoreMap = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+
+    const results = pageAssignments.map(a => {
+      const isLocked = a.status === 'locked';
+      const rev = revMap.get(a.id);
+      let reviewStatus: string | null = rev?.status || a.config?.review?.status || null;
+      if (!reviewStatus && isLocked) {
+        reviewStatus = 'approved';
+      }
+
+      let totalScore: number | null = null;
+      let totalW = 100;
+      let scoredW = 0;
+      let unscoredW = 100;
+      let resStatus: 'complete' | 'partial' | 'not_scored' = 'not_scored';
+
+      if (isLocked) {
+        const off = officialScoreMap.get(a.id);
+        if (off && off.total_score !== null) {
+          totalScore = off.total_score;
+          resStatus = 'complete';
+          scoredW = 100;
+          unscoredW = 0;
+        } else {
+          totalScore = null;
+          resStatus = 'not_scored';
+          scoredW = 0;
+          unscoredW = 100;
+        }
+        const reviewItems = a.config?.review_items || [];
+        if (reviewItems.length > 0) {
+          const sumW = reviewItems.reduce((acc: number, item: any) => acc + (Number(item.weight || item.score_snapshot?.weight) || 0), 0);
+          if (sumW > 0) {
+            totalW = sumW;
+            if (resStatus === 'complete') scoredW = sumW;
+            unscoredW = Math.max(0, totalW - scoredW);
+          }
+        }
+      } else {
+        const live = liveScoreMap.get(a.id);
+        if (live && live.status !== 'not_scored') {
+          totalScore = live.total_score;
+          totalW = live.total_weight;
+          scoredW = live.scored_weight;
+          unscoredW = Math.max(0, totalW - scoredW);
+          resStatus = (live.status === 'partial' ? 'partial' : 'complete') as any;
+        } else {
+          totalScore = null;
+          totalW = live?.total_weight || 100;
+          scoredW = 0;
+          unscoredW = totalW;
+          resStatus = 'not_scored';
+        }
+      }
+
+      let assigneeName = '';
+      let unitId: string | null = null;
+      let unitName: string | null = null;
+
+      if (a.assignee_type === 'individual') {
+        assigneeName = a.assignee_user?.full_name || '';
+        unitId = a.assignee_unit_id_snapshot || a.assignee_organization_unit_id || null;
+        unitName = a.snapshot_unit?.name || a.assignee_unit?.name || null;
+      } else {
+        assigneeName = a.assignee_unit?.name || '';
+        unitId = a.assignee_organization_unit_id || a.assignee_unit_id_snapshot || null;
+        unitName = a.assignee_unit?.name || a.snapshot_unit?.name || null;
+      }
+
+      return {
+        id: a.id,
+        assignment_id: a.id,
+        period_id: a.period_id,
+        period_name: a.period?.name || null,
+        assignee_type: a.assignee_type,
+        assignee_user_id: a.assignee_type === 'individual' ? (a.assignee_user_id || null) : null,
+        assignee_id: a.assignee_type === 'individual' ? (a.assignee_user_id || null) : (a.assignee_organization_unit_id || null),
+        assignee_name: assigneeName,
+        assignee_organization_unit_id: a.assignee_organization_unit_id || null,
+        assignee_organization_unit_name: a.assignee_unit?.name || null,
+        assignee_unit_id_snapshot: a.assignee_unit_id_snapshot || null,
+        assignee_unit_name: a.snapshot_unit?.name || null,
+        unit_id: unitId,
+        unit_name: unitName,
+        assignment_status: a.status,
+        status: a.status,
+        review_status: reviewStatus,
+        result_mode: isLocked ? 'official' : 'live',
+        result_status: resStatus,
+        total_score: totalScore,
+        total_weight: totalW,
+        scored_weight: scoredW,
+        unscored_weight: unscoredW,
+        effective_from: a.effective_from || null,
+        effective_to: a.effective_to || null,
+        template_id: a.template_id || null,
+        template_name: a.template?.name || null,
+        template_version_id: a.template_version_id || null,
+        created_at: a.created_at,
+        assigned_at: a.assigned_at || a.created_at || null
+      };
+    });
+
+    res.setHeader('X-Total-Count', String(totalCount));
+    if (req.query.format === 'array') {
+      return res.json(results);
+    }
+    res.json({
+      items: results,
+      total_count: totalCount,
+      limit,
+      offset
+    });
+  } catch (err: any) {
+    console.error('[API kpi_get_dashboard_assignments] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.all(['/api/rpc/kpi_get_dashboard_kpi_breakdown', '/api/kpi/dashboard/kpi-breakdown', '/rest/v1/rpc/kpi_get_dashboard_kpi_breakdown'], authenticateUser, async (req: Request, res: Response) => {
+  const periodId = req.query.period_id || req.query.p_period_id || req.body?.period_id || req.body?.p_period_id;
+  const unitId = req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id;
+  const assignmentStatus = req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status;
+  const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+  const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+
+  if (!periodId) {
+    return res.status(400).json({ error: 'period_id is required' });
+  }
+
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin || getSupabaseAdminClient(req);
+    const userId = res.locals.user?.id;
+    const profile = res.locals.profile;
+
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database unavailable' });
+
+    const userRole = profile?.system_role;
+    if (userRole !== 'manager' && userRole !== 'admin' && userRole !== 'executive') {
+      return res.status(403).json({ error: 'access_denied', message: 'Staff users are not authorized to access Manager Dashboard' });
+    }
+
+    // Enforce Manager Scope: Primary unit + descendants only
+    const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, userRole);
+    if (!scopeData) return res.status(403).json({ error: 'access_denied' });
+    let allowedUnitIds = scopeData.scopeUnitIds;
+
+    if (unitId) {
+      if (!allowedUnitIds.has(unitId as string)) {
+        return res.status(403).json({ error: 'access_denied', message: 'Requested unit is outside your scope' });
+      }
+      const { data: allUnits } = await supabaseAdmin.from('organization_units').select('id, parent_id');
+      const requestedScope = getDescendantUnitIds(allUnits || [], unitId as string);
+      allowedUnitIds = new Set([...allowedUnitIds].filter(x => requestedScope.has(x)));
+    }
+
+    const allowedUnitsArr = Array.from(allowedUnitIds);
+    if (allowedUnitsArr.length === 0) return res.json([]);
+
+    let query = supabaseAdmin.from('kpi_assignments')
+      .select(`
+        id,
+        period_id,
+        template_id,
+        assignee_type,
+        assignee_user_id,
+        assignee_organization_unit_id,
+        assignee_unit_id_snapshot,
+        status,
+        notes,
+        config
+      `)
+      .eq('period_id', periodId)
+      .or(`assignee_unit_id_snapshot.in.(${allowedUnitsArr.join(',')}),assignee_organization_unit_id.in.(${allowedUnitsArr.join(',')})`);
+
+    if (assigneeType && assigneeType !== 'all') {
+      query = query.eq('assignee_type', assigneeType);
+    }
+
+    if (assignmentStatus && assignmentStatus !== 'all') {
+      query = query.eq('status', assignmentStatus);
+    } else {
+      query = query.not('status', 'eq', 'draft');
+    }
+
+    if (resultMode === 'live') {
+      query = query.not('status', 'eq', 'locked');
+    } else if (resultMode === 'official') {
+      query = query.eq('status', 'locked');
+    }
+
+    const { data: rawAssignments, error: asgnErr } = await query;
+    if (asgnErr) throw asgnErr;
+
+    // Filter assignments by attributed unit matching allowedUnitIds, deduplicate
+    const assignmentMap = new Map<string, any>();
+    for (const a of (rawAssignments || [])) {
+      if (assignmentMap.has(a.id)) continue;
+      const targetUnitId = a.assignee_type === 'individual'
+        ? (a.assignee_unit_id_snapshot || a.assignee_organization_unit_id)
+        : (a.assignee_organization_unit_id || a.assignee_unit_id_snapshot);
+
+      if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) {
+        continue;
+      }
+      assignmentMap.set(a.id, a);
+    }
+
+    const assignments = Array.from(assignmentMap.values());
+    if (assignments.length === 0) return res.json([]);
+
+    const assignmentIds = assignments.map(a => a.id);
+    const { data: allItems, error: itemsErr } = await supabaseAdmin
+      .from('kpi_assignment_items')
+      .select(`
+        id,
+        assignment_id,
+        kpi_definition_id,
+        weight,
+        cap_percent,
+        target_config,
+        scoring_config,
+        definition_snapshot,
+        definition:kpi_definition_id(id, code, name, unit_code, measurement_type, direction, default_scoring_method)
+      `)
+      .in('assignment_id', assignmentIds);
+
+    if (itemsErr) throw itemsErr;
+    if (!allItems || allItems.length === 0) return res.json([]);
+
+    const liveAssignments = assignments.filter(a => a.status !== 'locked');
+    const lockedAssignments = assignments.filter(a => a.status === 'locked');
+    const liveAsgnIdSet = new Set(liveAssignments.map(a => a.id));
+    const lockedAsgnIdSet = new Set(lockedAssignments.map(a => a.id));
+
+    const liveItems = allItems.filter(it => liveAsgnIdSet.has(it.assignment_id));
+    const lockedItems = allItems.filter(it => lockedAsgnIdSet.has(it.assignment_id));
+
+    // Batch load actual entries for all live items (single query)
+    const actualsMap = new Map<string, number>();
+    const liveItemIds = liveItems.map(it => it.id);
+    if (liveItemIds.length > 0) {
+      const { data: actualEntries, error: actErr } = await supabaseAdmin
+        .from('kpi_manual_actual_entries')
+        .select('assignment_item_id, value_numeric, entered_at')
+        .in('assignment_item_id', liveItemIds)
+        .order('entered_at', { ascending: false });
+
+      if (!actErr && actualEntries) {
+        for (const entry of actualEntries) {
+          if (!actualsMap.has(entry.assignment_item_id) && entry.value_numeric !== null && entry.value_numeric !== undefined) {
+            actualsMap.set(entry.assignment_item_id, Number(entry.value_numeric));
+          }
+        }
+      }
+    }
+
+    // Batch load official reviews for locked items (single query)
+    const lockedItemIds = lockedItems.map(it => it.id);
+    const officialItemReviewsMap = new Map<string, any>();
+    if (lockedItemIds.length > 0) {
+      const { data: itemReviews, error: revErr } = await supabaseAdmin
+        .from('kpi_assignment_item_reviews')
+        .select('assignment_item_id, final_raw_score, final_weighted_score, final_achievement_percent, score_snapshot')
+        .in('assignment_item_id', lockedItemIds);
+
+      if (!revErr && itemReviews) {
+        for (const ir of itemReviews) {
+          officialItemReviewsMap.set(ir.assignment_item_id, ir);
+        }
+      }
+    }
+
+    // KPI Grouping Map: keyed by stable identity (kpi_definition_id or snapshot code)
+    interface KpiGroupAccumulator {
+      kpi_key: string;
+      kpi_definition_id: string | null;
+      kpi_code: string;
+      kpi_name: string;
+      measurement_type: string;
+      assignment_ids: Set<string>;
+      item_count: number;
+      scored_count: number;
+      partial_count: number;
+      unscored_count: number;
+      live_count: number;
+      official_count: number;
+      achievement_percents: number[];
+      raw_scores: number[];
+      weighted_scores: number[];
+      live_scores: number[];
+      official_scores: number[];
+    }
+
+    const groupMap = new Map<string, KpiGroupAccumulator>();
+
+    for (const it of allItems) {
+      const kpiKey = it.kpi_definition_id || (it.definition_snapshot?.code ? 'code:' + it.definition_snapshot.code : it.id);
+      const kpiCode = it.definition?.code || it.definition_snapshot?.code || '';
+      const kpiName = it.definition?.name || it.definition_snapshot?.name || 'Chưa đặt tên';
+      const measurementType = it.definition?.measurement_type || it.definition_snapshot?.measurement_type || 'number';
+
+      let group = groupMap.get(kpiKey);
+      if (!group) {
+        group = {
+          kpi_key: kpiKey,
+          kpi_definition_id: it.kpi_definition_id || null,
+          kpi_code: kpiCode,
+          kpi_name: kpiName,
+          measurement_type: measurementType,
+          assignment_ids: new Set<string>(),
+          item_count: 0,
+          scored_count: 0,
+          partial_count: 0,
+          unscored_count: 0,
+          live_count: 0,
+          official_count: 0,
+          achievement_percents: [],
+          raw_scores: [],
+          weighted_scores: [],
+          live_scores: [],
+          official_scores: []
+        };
+        groupMap.set(kpiKey, group);
+      }
+
+      group.assignment_ids.add(it.assignment_id);
+      group.item_count++;
+
+      const parentAssignment = assignmentMap.get(it.assignment_id);
+      const isLocked = parentAssignment?.status === 'locked';
+
+      if (isLocked) {
+        group.official_count++;
+        // Official Snapshot read path
+        const reviewItem = officialItemReviewsMap.get(it.id);
+        const configReviewItem = (parentAssignment?.config?.review_items || []).find((ri: any) => ri.assignment_item_id === it.id || ri.kpi_definition_id === it.kpi_definition_id);
+
+        let rawScore: number | null = null;
+        let weightedScore: number | null = null;
+        let achPercent: number | null = null;
+        let isScored = false;
+
+        if (reviewItem) {
+          if (reviewItem.final_raw_score !== null && reviewItem.final_raw_score !== undefined) {
+            rawScore = Number(reviewItem.final_raw_score);
+            weightedScore = Number(reviewItem.final_weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+            achPercent = reviewItem.final_achievement_percent !== null && reviewItem.final_achievement_percent !== undefined
+              ? Number(reviewItem.final_achievement_percent)
+              : rawScore;
+            isScored = true;
+          } else if (reviewItem.score_snapshot?.score_result?.raw_score !== undefined) {
+            rawScore = Number(reviewItem.score_snapshot.score_result.raw_score);
+            weightedScore = Number(reviewItem.score_snapshot.score_result.weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+            achPercent = Number(reviewItem.score_snapshot.score_result.achievement_percent ?? rawScore);
+            isScored = true;
+          }
+        }
+
+        if (!isScored && configReviewItem) {
+          const snapScore = configReviewItem.score_snapshot?.score_result;
+          if (configReviewItem.final_raw_score !== null && configReviewItem.final_raw_score !== undefined) {
+            rawScore = Number(configReviewItem.final_raw_score);
+            weightedScore = Number(configReviewItem.final_weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+            achPercent = Number(configReviewItem.final_achievement_percent ?? rawScore);
+            isScored = true;
+          } else if (snapScore && snapScore.raw_score !== undefined) {
+            rawScore = Number(snapScore.raw_score);
+            weightedScore = Number(snapScore.weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+            achPercent = Number(snapScore.achievement_percent ?? rawScore);
+            isScored = true;
+          }
+        }
+
+        if (!isScored && parentAssignment?.config?.official_result?.total_score !== undefined) {
+          rawScore = Number(parentAssignment.config.official_result.total_score);
+          weightedScore = (rawScore * (Number(it.weight) || 0)) / 100;
+          achPercent = rawScore;
+          isScored = true;
+        }
+
+        if (isScored && rawScore !== null) {
+          group.scored_count++;
+          group.achievement_percents.push(achPercent ?? rawScore);
+          group.raw_scores.push(rawScore);
+          group.weighted_scores.push(weightedScore ?? (rawScore * (Number(it.weight) || 0)) / 100);
+          group.official_scores.push(rawScore);
+        } else {
+          group.unscored_count++;
+        }
+      } else {
+        group.live_count++;
+        // Live Scoring read path
+        const actualVal = actualsMap.get(it.id);
+        if (actualVal !== undefined) {
+          const target = Number(it.target_config?.target_value) || 1;
+          const actual = actualVal;
+          const direction = it.definition?.direction || it.definition_snapshot?.direction || 'higher_is_better';
+          let rawAch = 0;
+          if (direction === 'lower_is_better') {
+            rawAch = actual === 0 ? 100 : (target / actual) * 100;
+          } else if (direction === 'exact_target') {
+            rawAch = actual === target ? 100 : 0;
+          } else {
+            rawAch = (actual / target) * 100;
+          }
+
+          let ach = rawAch;
+          if (it.cap_percent !== null && it.cap_percent !== undefined) {
+            ach = Math.min(rawAch, Number(it.cap_percent));
+          }
+
+          let rawScore = ach;
+          const scoringConfig = it.scoring_config;
+          const method = it.definition?.default_scoring_method || it.definition_snapshot?.default_scoring_method || 'linear';
+          if (method === 'bands' && Array.isArray(scoringConfig?.bands)) {
+            let matchedBand: any = null;
+            for (const b of scoringConfig.bands) {
+              const bMin = Number(b.min_percent);
+              if (ach >= bMin) {
+                if (!matchedBand || bMin > Number(matchedBand.min_percent)) {
+                  matchedBand = b;
+                }
+              }
+            }
+            rawScore = matchedBand ? Number(matchedBand.score) : 0;
+          }
+
+          const weight = Number(it.weight) || 0;
+          const weightedScore = (rawScore * weight) / 100.0;
+
+          group.scored_count++;
+          group.achievement_percents.push(Math.round(ach * 10000) / 10000);
+          group.raw_scores.push(Math.round(rawScore * 10000) / 10000);
+          group.weighted_scores.push(Math.round(weightedScore * 10000) / 10000);
+          group.live_scores.push(Math.round(rawScore * 10000) / 10000);
+
+          if (parentAssignment?.notes === 'partial' || parentAssignment?.status === 'partial') {
+            group.partial_count++;
+          }
+        } else {
+          group.unscored_count++;
+          if (parentAssignment?.notes === 'partial' || parentAssignment?.status === 'partial') {
+            group.partial_count++;
+          }
+        }
+      }
+    }
+
+    const results = Array.from(groupMap.values()).map(group => {
+      const avgAch = group.achievement_percents.length > 0
+        ? Math.round((group.achievement_percents.reduce((a, b) => a + b, 0) / group.achievement_percents.length) * 10000) / 10000
+        : null;
+
+      const avgRaw = group.raw_scores.length > 0
+        ? Math.round((group.raw_scores.reduce((a, b) => a + b, 0) / group.raw_scores.length) * 10000) / 10000
+        : null;
+
+      const avgWeighted = group.weighted_scores.length > 0
+        ? Math.round((group.weighted_scores.reduce((a, b) => a + b, 0) / group.weighted_scores.length) * 10000) / 10000
+        : null;
+
+      const liveAvg = group.live_scores.length > 0
+        ? Math.round((group.live_scores.reduce((a, b) => a + b, 0) / group.live_scores.length) * 10000) / 10000
+        : null;
+
+      const officialAvg = group.official_scores.length > 0
+        ? Math.round((group.official_scores.reduce((a, b) => a + b, 0) / group.official_scores.length) * 10000) / 10000
+        : null;
+
+      return {
+        kpi_key: group.kpi_key,
+        kpi_definition_id: group.kpi_definition_id,
+        kpi_code: group.kpi_code,
+        kpi_name: group.kpi_name,
+
+        assignment_count: group.assignment_ids.size,
+        item_count: group.item_count,
+
+        scored_count: group.scored_count,
+        partial_count: group.partial_count,
+        unscored_count: group.unscored_count,
+
+        live_count: group.live_count,
+        official_count: group.official_count,
+
+        average_achievement_percent: avgAch,
+        average_raw_score: avgRaw,
+        average_weighted_score: avgWeighted,
+
+        live_average_score: liveAvg,
+        official_average_score: officialAvg,
+
+        // Backwards compatibility aliases
+        measurement_type: group.measurement_type,
+        average_score: avgRaw,
+        assignment_item_count: group.item_count,
+        result_mode: resultMode as any
+      };
+    });
+
+    results.sort((a, b) => a.kpi_name.localeCompare(b.kpi_name) || a.kpi_code.localeCompare(b.kpi_code));
+    return res.json(results);
+  } catch (err: any) {
+    console.error('[API kpi_get_dashboard_kpi_breakdown] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.all(['/api/rpc/kpi_get_official_assignment_result', '/rest/v1/rpc/kpi_get_official_assignment_result'], authenticateUser, async (req: Request, res: Response) => {
   const assignmentId = req.query.p_assignment_id || req.body?.p_assignment_id;
   if (!assignmentId) return res.status(400).json({ error: 'Missing p_assignment_id' });

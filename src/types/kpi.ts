@@ -305,3 +305,142 @@ export interface KpiOfficialAssignmentResult {
   items: KpiOfficialItemResult[];
 }
 
+// ==========================================
+// V0.4.6-A1 KPI DASHBOARD READ MODEL TYPES
+// ==========================================
+
+export type KpiDashboardResultMode = 'all' | 'live' | 'official';
+export type KpiDashboardScoringStatus = 'complete' | 'partial' | 'no_data' | 'not_scored';
+
+export interface KpiDashboardFilters {
+  periodId: string;
+  unitId?: string;
+  parentUnitId?: string;
+  assignmentStatus?: KpiAssignmentStatus | 'all';
+  resultMode: KpiDashboardResultMode;
+  assigneeType?: KpiAssigneeType | 'all';
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface KpiDashboardSummary {
+  period_id?: string;
+  assignment_count: number;
+  live_assignment_count: number;
+  official_assignment_count: number;
+  active_count: number;
+  closed_count: number;
+  locked_count: number;
+  complete_count: number;
+  partial_count: number;
+  unscored_count: number;
+  no_data_count?: number;
+  live_average_score: number | null;
+  official_average_score: number | null;
+  live_scored_count: number;
+  official_scored_count: number;
+}
+
+export interface KpiDashboardUnitBreakdown {
+  unit_id: string;
+  unit_name: string;
+  unit_code?: string;
+  parent_unit_id: string | null;
+  parent_id?: string | null;
+
+  assignment_count: number;
+
+  individual_assignment_count: number;
+  organization_assignment_count: number;
+
+  live_assignment_count: number;
+  official_assignment_count: number;
+
+  active_count?: number;
+  closed_count?: number;
+  locked_count: number;
+
+  complete_count: number;
+  partial_count: number;
+  unscored_count: number;
+  no_data_count?: number;
+
+  live_average_score: number | null;
+  official_average_score: number | null;
+  overall_average_score?: number | null;
+
+  live_scored_count: number;
+  official_scored_count: number;
+}
+
+export interface KpiDashboardAssignmentItem {
+  id: string;
+  assignment_id: string;
+  period_id: string;
+  period_name?: string | null;
+  assignee_type: KpiAssigneeType;
+  assignee_user_id?: string | null;
+  assignee_id?: string | null;
+  assignee_name: string;
+  assignee_organization_unit_id?: string | null;
+  assignee_organization_unit_name?: string | null;
+  assignee_unit_id_snapshot?: string | null;
+  assignee_unit_name?: string | null;
+  unit_id?: string | null;
+  unit_name?: string | null;
+  status: KpiAssignmentStatus;
+  assignment_status: KpiAssignmentStatus;
+  review_status: KpiReviewStatus | null;
+  result_mode: 'live' | 'official';
+  total_score: number | null;
+  total_weight: number;
+  scored_weight: number;
+  unscored_weight: number;
+  result_status: KpiDashboardScoringStatus;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  template_id?: string | null;
+  template_name?: string | null;
+  template_version_id?: string | null;
+  created_at?: string;
+  assigned_at?: string | null;
+}
+
+export interface KpiDashboardAssignmentListResponse {
+  items: KpiDashboardAssignmentItem[];
+  total_count: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface KpiDashboardKpiBreakdown {
+  kpi_key: string;
+  kpi_definition_id: string | null;
+  kpi_code: string;
+  kpi_name: string;
+
+  assignment_count: number;
+  item_count: number;
+
+  scored_count: number;
+  partial_count: number;
+  unscored_count: number;
+
+  live_count: number;
+  official_count: number;
+
+  average_achievement_percent: number | null;
+  average_raw_score: number | null;
+  average_weighted_score: number | null;
+
+  live_average_score: number | null;
+  official_average_score: number | null;
+
+  // Additional backwards-compatible alias fields
+  measurement_type?: string;
+  average_score?: number | null;
+  assignment_item_count?: number;
+  result_mode?: KpiDashboardResultMode;
+}
+
