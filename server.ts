@@ -6183,9 +6183,13 @@ function getAssignmentAttributedUnitId(a: {
 async function resolveLiveScoresBatch(
   supabaseAdmin: any,
   liveAssignments: any[]
-): Promise<Map<string, { total_score: number; status: string; total_weight: number; scored_weight: number }>> {
+): Promise<{ 
+  liveScoreMap: Map<string, { total_score: number; status: string; total_weight: number; scored_weight: number }>,
+  liveItemsMap: Map<string, any[]>
+}> {
   const liveScoreMap = new Map<string, { total_score: number; status: string; total_weight: number; scored_weight: number }>();
-  if (!liveAssignments || liveAssignments.length === 0) return liveScoreMap;
+  const liveItemsMap = new Map<string, any[]>();
+  if (!liveAssignments || liveAssignments.length === 0) return { liveScoreMap, liveItemsMap };
 
   const liveAssignmentIds = liveAssignments.map(a => a.id);
 
@@ -6271,12 +6275,19 @@ async function resolveLiveScoresBatch(
 
         const weightedScore = (rawScore * weight) / 100.0;
         ts += weightedScore;
+        it.resolved_ach = ach;
+        it.resolved_raw = rawScore;
+        it.resolved_weighted = weightedScore;
+        it.resolved_actual = actual;
+        it.resolved_is_scored = true;
       } else {
+        it.resolved_is_scored = false;
         hasMissing = true;
       }
     }
 
     let st = 'complete';
+    liveItemsMap.set(a.id, items);
     if (sw === 0) {
       st = 'not_scored';
     } else if (hasMissing || sw < tw) {
@@ -6291,15 +6302,93 @@ async function resolveLiveScoresBatch(
     });
   }
 
-  return liveScoreMap;
+  return { liveScoreMap, liveItemsMap };
+}
+
+
+
+async function filterAssignmentsByKpiKey(supabaseAdmin: any, assignments: any[], kpiKey: string) {
+  if (!kpiKey || !assignments || assignments.length === 0) return assignments;
+  const assignmentIds = assignments.map(a => a.id);
+  const { data: matchedItems } = await supabaseAdmin
+    .from('kpi_assignment_items')
+    .select('assignment_id, kpi_definition_id, id, definition_snapshot')
+    .in('assignment_id', assignmentIds);
+  const matchedAsgIds = new Set();
+  (matchedItems || []).forEach((it: any) => {
+    const key = it.kpi_definition_id || (it.definition_snapshot?.code ? 'code:' + it.definition_snapshot.code : it.id);
+    if (key === kpiKey) matchedAsgIds.add(it.assignment_id);
+  });
+  return assignments.filter(a => matchedAsgIds.has(a.id));
+}
+
+async function applyAdvancedFiltersAndBatchResolve(supabaseAdmin: any, assignments: any[], filters: any) {
+  let filtered = [...assignments];
+  const { reviewStatus, completionStatus } = filters;
+
+  const allIds = filtered.map(a => a.id);
+  const revMap = new Map<string, any>();
+  if (allIds.length > 0) {
+    try {
+      // Chunking to be safe if large, but we'll do 1 query for now
+      const { data: reviews } = await supabaseAdmin
+        .from('kpi_assignment_reviews')
+        .select('id, assignment_id, status, official_total_score')
+        .in('assignment_id', allIds);
+      (reviews || []).forEach((r: any) => revMap.set(r.assignment_id, r));
+    } catch (e) {
+      // Fallback
+    }
+  }
+
+  if (reviewStatus && reviewStatus !== 'all') {
+    filtered = filtered.filter(a => {
+      const isLocked = a.status === 'locked';
+      const rev = revMap.get(a.id);
+      let rs = rev?.status || a.config?.review?.status || null;
+      if (!rs && isLocked) rs = 'approved';
+      if (!rs) rs = 'not_started';
+      return rs === reviewStatus;
+    });
+  }
+
+  const liveAssignments = filtered.filter(a => a.status !== 'locked');
+  const officialAssignments = filtered.filter(a => a.status === 'locked');
+  
+  const { liveScoreMap, liveItemsMap } = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
+  const { officialScoreMap, officialItemsMap } = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+
+  if (completionStatus && completionStatus !== 'all') {
+    filtered = filtered.filter(a => {
+      const isLocked = a.status === 'locked';
+      let resStatus = 'not_scored';
+      if (isLocked) {
+        const off = officialScoreMap.get(a.id);
+        if (off && off.status) resStatus = off.status;
+      } else {
+        const live = liveScoreMap.get(a.id);
+        if (live && live.total_score !== null) {
+           resStatus = live.status === 'partial' ? 'partial' : 'complete';
+        }
+      }
+      if (completionStatus === 'unscored' && resStatus === 'not_scored') return true;
+      return resStatus === completionStatus;
+    });
+  }
+
+  return { finalAssignments: filtered, liveScoreMap, officialScoreMap, liveItemsMap, officialItemsMap, revMap };
 }
 
 async function resolveOfficialScoresBatch(
   supabaseAdmin: any,
   officialAssignments: any[]
-): Promise<Map<string, { total_score: number | null; status: string }>> {
+): Promise<{
+  officialScoreMap: Map<string, { total_score: number | null; status: string }>,
+  officialItemsMap: Map<string, any[]>
+}> {
   const officialScoreMap = new Map<string, { total_score: number | null; status: string }>();
-  if (!officialAssignments || officialAssignments.length === 0) return officialScoreMap;
+  const officialItemsMap = new Map<string, any[]>();
+  if (!officialAssignments || officialAssignments.length === 0) return { officialScoreMap, officialItemsMap };
 
   const officialIds = officialAssignments.map(a => a.id);
   const { data: reviews } = await supabaseAdmin
@@ -6339,13 +6428,19 @@ async function resolveOfficialScoresBatch(
       officialScore = a.config.review_items.reduce((sum: number, it: any) => sum + (Number(it.final_weighted_score) || 0), 0);
     }
 
+    const resolvedItems = a.config?.review_items || [];
+    let itemsFromSnaps = [];
+    if (rev?.id) {
+       itemsFromSnaps = itemReviews.filter((ir: any) => ir.review_id === rev.id);
+    }
+    officialItemsMap.set(a.id, resolvedItems.length > 0 ? resolvedItems : itemsFromSnaps);
     officialScoreMap.set(a.id, {
       total_score: officialScore !== null ? Math.round(officialScore * 10000) / 10000 : null,
       status: officialScore !== null ? 'complete' : 'not_scored'
     });
   }
 
-  return officialScoreMap;
+  return { officialScoreMap, officialItemsMap };
 }
 
 app.all(['/api/rpc/kpi_get_dashboard_summary', '/api/kpi/dashboard/summary', '/rest/v1/rpc/kpi_get_dashboard_summary'], authenticateUser, async (req: Request, res: Response) => {
@@ -6354,7 +6449,14 @@ app.all(['/api/rpc/kpi_get_dashboard_summary', '/api/kpi/dashboard/summary', '/r
     const unitId = (req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id) as string;
     const assignmentStatus = (req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status) as string;
     const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+    
     const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+    const reviewStatus = (req.query.review_status || req.query.p_review_status || req.body?.review_status || req.body?.p_review_status) as string;
+    const completionStatus = (req.query.completion_status || req.query.p_completion_status || req.body?.completion_status || req.body?.p_completion_status) as string;
+    const effectiveFrom = (req.query.effective_from || req.query.p_effective_from || req.body?.effective_from || req.body?.p_effective_from) as string;
+    const effectiveTo = (req.query.effective_to || req.query.p_effective_to || req.body?.effective_to || req.body?.p_effective_to) as string;
+    const reqKpiKey = (req.query.kpi_key || req.query.p_kpi_key || req.body?.kpi_key || req.body?.p_kpi_key) as string;
+
 
     if (!periodId) return res.status(400).json({ error: 'Missing period_id' });
 
@@ -6418,9 +6520,17 @@ app.all(['/api/rpc/kpi_get_dashboard_summary', '/api/kpi/dashboard/summary', '/r
 
     if (resultMode === 'live') {
       query = query.not('status', 'eq', 'locked');
-    } else if (resultMode === 'official') {
+    } else 
+    if (resultMode === 'official') {
       query = query.eq('status', 'locked');
     }
+    if (effectiveFrom) {
+      query = query.or(`effective_to.gte.${effectiveFrom},effective_to.is.null`);
+    }
+    if (effectiveTo) {
+      query = query.or(`effective_from.lte.${effectiveTo},effective_from.is.null`);
+    }
+
 
     const { data: rawAssignments, error } = await query;
     if (error) throw error;
@@ -6433,30 +6543,22 @@ app.all(['/api/rpc/kpi_get_dashboard_summary', '/api/kpi/dashboard/summary', '/r
       if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) continue;
       assignmentMap.set(a.id, a);
     }
+
     const assignments = Array.from(assignmentMap.values());
-
-    const liveAssignments = assignments.filter(a => a.status !== 'locked');
-    const officialAssignments = assignments.filter(a => a.status === 'locked');
-
-    // Batch resolve scores (No N+1 queries)
-    const liveScoreMap = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
-    const officialScoreMap = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+    const { finalAssignments, liveScoreMap, officialScoreMap, liveItemsMap, officialItemsMap } = await applyAdvancedFiltersAndBatchResolve(supabaseAdmin, assignments, { reviewStatus, completionStatus });
 
     let active_count = 0;
     let closed_count = 0;
     let locked_count = 0;
-
     let complete_count = 0;
     let partial_count = 0;
     let unscored_count = 0;
-
     let liveSum = 0;
     let live_scored_count = 0;
-
     let officialSum = 0;
     let official_scored_count = 0;
 
-    for (const a of assignments) {
+    for (const a of finalAssignments) {
       const isLocked = a.status === 'locked';
       if (isLocked) {
         locked_count++;
@@ -6503,7 +6605,11 @@ app.all(['/api/rpc/kpi_get_dashboard_summary', '/api/kpi/dashboard/summary', '/r
       ? Math.round((officialSum / official_scored_count) * 100) / 100
       : null;
 
+    
+    const liveAssignments = finalAssignments.filter(a => a.status !== 'locked');
+    const officialAssignments = finalAssignments.filter(a => a.status === 'locked');
     const summaryResponse = {
+
       period_id: periodId,
       assignment_count: assignments.length,
       live_assignment_count: liveAssignments.length,
@@ -6535,7 +6641,14 @@ app.all(['/api/rpc/kpi_get_dashboard_unit_breakdown', '/api/kpi/dashboard/unit-b
     const unitId = (req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id) as string;
     const assignmentStatus = (req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status) as string;
     const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+    
     const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+    const reviewStatus = (req.query.review_status || req.query.p_review_status || req.body?.review_status || req.body?.p_review_status) as string;
+    const completionStatus = (req.query.completion_status || req.query.p_completion_status || req.body?.completion_status || req.body?.p_completion_status) as string;
+    const effectiveFrom = (req.query.effective_from || req.query.p_effective_from || req.body?.effective_from || req.body?.p_effective_from) as string;
+    const effectiveTo = (req.query.effective_to || req.query.p_effective_to || req.body?.effective_to || req.body?.p_effective_to) as string;
+    const reqKpiKey = (req.query.kpi_key || req.query.p_kpi_key || req.body?.kpi_key || req.body?.p_kpi_key) as string;
+
 
     if (!periodId) return res.status(400).json({ error: 'Missing period_id' });
 
@@ -6599,9 +6712,17 @@ app.all(['/api/rpc/kpi_get_dashboard_unit_breakdown', '/api/kpi/dashboard/unit-b
 
     if (resultMode === 'live') {
       query = query.not('status', 'eq', 'locked');
-    } else if (resultMode === 'official') {
+    } else 
+    if (resultMode === 'official') {
       query = query.eq('status', 'locked');
     }
+    if (effectiveFrom) {
+      query = query.or(`effective_to.gte.${effectiveFrom},effective_to.is.null`);
+    }
+    if (effectiveTo) {
+      query = query.or(`effective_from.lte.${effectiveTo},effective_from.is.null`);
+    }
+
 
     const { data: rawAssignments, error } = await query;
     if (error) throw error;
@@ -6620,8 +6741,8 @@ app.all(['/api/rpc/kpi_get_dashboard_unit_breakdown', '/api/kpi/dashboard/unit-b
     const officialAssignments = assignments.filter(a => a.status === 'locked');
 
     // Batch resolve scores (No N+1 queries)
-    const liveScoreMap = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
-    const officialScoreMap = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+    const { liveScoreMap, liveItemsMap } = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
+    const { officialScoreMap, officialItemsMap } = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
 
     // Direct unit attribution map
     const unitDataMap = new Map<string, {
@@ -6770,7 +6891,14 @@ app.all(['/api/rpc/kpi_get_dashboard_assignments', '/api/kpi/dashboard/assignmen
     const unitId = (req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id) as string;
     const assignmentStatus = (req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status) as string;
     const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
+    
     const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+    const reviewStatus = (req.query.review_status || req.query.p_review_status || req.body?.review_status || req.body?.p_review_status) as string;
+    const completionStatus = (req.query.completion_status || req.query.p_completion_status || req.body?.completion_status || req.body?.p_completion_status) as string;
+    const effectiveFrom = (req.query.effective_from || req.query.p_effective_from || req.body?.effective_from || req.body?.p_effective_from) as string;
+    const effectiveTo = (req.query.effective_to || req.query.p_effective_to || req.body?.effective_to || req.body?.p_effective_to) as string;
+    const reqKpiKey = (req.query.kpi_key || req.query.p_kpi_key || req.body?.kpi_key || req.body?.p_kpi_key) as string;
+
     const search = ((req.query.search || req.body?.search || '') as string).trim();
     const limitRaw = req.query.limit || req.query.p_limit || req.body?.limit || req.body?.p_limit;
     const offsetRaw = req.query.offset || req.query.p_offset || req.body?.offset || req.body?.p_offset;
@@ -6844,9 +6972,17 @@ app.all(['/api/rpc/kpi_get_dashboard_assignments', '/api/kpi/dashboard/assignmen
 
     if (resultMode === 'live') {
       query = query.not('status', 'eq', 'locked');
-    } else if (resultMode === 'official') {
+    } else 
+    if (resultMode === 'official') {
       query = query.eq('status', 'locked');
     }
+    if (effectiveFrom) {
+      query = query.or(`effective_to.gte.${effectiveFrom},effective_to.is.null`);
+    }
+    if (effectiveTo) {
+      query = query.or(`effective_from.lte.${effectiveTo},effective_from.is.null`);
+    }
+
 
     query = query.order('created_at', { ascending: false });
 
@@ -6881,38 +7017,18 @@ app.all(['/api/rpc/kpi_get_dashboard_assignments', '/api/kpi/dashboard/assignmen
       });
     }
 
-    const totalCount = filteredAssignments.length;
-    const pageAssignments = filteredAssignments.slice(offset, offset + limit);
+    const { finalAssignments, liveScoreMap, officialScoreMap, liveItemsMap, officialItemsMap, revMap } = await applyAdvancedFiltersAndBatchResolve(supabaseAdmin, filteredAssignments, { reviewStatus, completionStatus });
 
-    // Batch resolve reviews for page
-    const pageIds = pageAssignments.map(a => a.id);
-    const revMap = new Map<string, any>();
-    if (pageIds.length > 0) {
-      try {
-        const { data: reviews } = await supabaseAdmin
-          .from('kpi_assignment_reviews')
-          .select('id, assignment_id, status, official_total_score')
-          .in('assignment_id', pageIds);
-        (reviews || []).forEach((r: any) => revMap.set(r.assignment_id, r));
-      } catch {
-        // Fallback to a.config.review if table not available
-      }
-    }
-
-    const liveAssignments = pageAssignments.filter(a => a.status !== 'locked');
-    const officialAssignments = pageAssignments.filter(a => a.status === 'locked');
-
-    // Batch resolve scores (No N+1 queries)
-    const liveScoreMap = await resolveLiveScoresBatch(supabaseAdmin, liveAssignments);
-    const officialScoreMap = await resolveOfficialScoresBatch(supabaseAdmin, officialAssignments);
+    const totalCount = finalAssignments.length;
+    const pageAssignments = finalAssignments.slice(offset, offset + limit);
 
     const results = pageAssignments.map(a => {
       const isLocked = a.status === 'locked';
       const rev = revMap.get(a.id);
-      let reviewStatus: string | null = rev?.status || a.config?.review?.status || null;
-      if (!reviewStatus && isLocked) {
-        reviewStatus = 'approved';
-      }
+      let rs = rev?.status || a.config?.review?.status || null;
+      if (!rs && isLocked) rs = 'approved';
+      if (!rs) rs = 'not_started';
+      let reviewStatus: string | null = rs;
 
       let totalScore: number | null = null;
       let totalW = 100;
@@ -7029,7 +7145,14 @@ app.all(['/api/rpc/kpi_get_dashboard_kpi_breakdown', '/api/kpi/dashboard/kpi-bre
   const unitId = req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id;
   const assignmentStatus = req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status;
   const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();
-  const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+  
+    const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+    const reviewStatus = (req.query.review_status || req.query.p_review_status || req.body?.review_status || req.body?.p_review_status) as string;
+    const completionStatus = (req.query.completion_status || req.query.p_completion_status || req.body?.completion_status || req.body?.p_completion_status) as string;
+    const effectiveFrom = (req.query.effective_from || req.query.p_effective_from || req.body?.effective_from || req.body?.p_effective_from) as string;
+    const effectiveTo = (req.query.effective_to || req.query.p_effective_to || req.body?.effective_to || req.body?.p_effective_to) as string;
+    const reqKpiKey = (req.query.kpi_key || req.query.p_kpi_key || req.body?.kpi_key || req.body?.p_kpi_key) as string;
+
 
   if (!periodId) {
     return res.status(400).json({ error: 'period_id is required' });
@@ -7092,9 +7215,17 @@ app.all(['/api/rpc/kpi_get_dashboard_kpi_breakdown', '/api/kpi/dashboard/kpi-bre
 
     if (resultMode === 'live') {
       query = query.not('status', 'eq', 'locked');
-    } else if (resultMode === 'official') {
+    } else 
+    if (resultMode === 'official') {
       query = query.eq('status', 'locked');
     }
+    if (effectiveFrom) {
+      query = query.or(`effective_to.gte.${effectiveFrom},effective_to.is.null`);
+    }
+    if (effectiveTo) {
+      query = query.or(`effective_from.lte.${effectiveTo},effective_from.is.null`);
+    }
+
 
     const { data: rawAssignments, error: asgnErr } = await query;
     if (asgnErr) throw asgnErr;
@@ -7527,6 +7658,455 @@ app.all(['/api/rpc/kpi_get_official_assignment_result', '/rest/v1/rpc/kpi_get_of
   }
 });
 
+  
+app.all(['/api/rpc/kpi_get_dashboard_kpi_unit_breakdown', '/api/kpi/dashboard/kpi-unit-breakdown', '/rest/v1/rpc/kpi_get_dashboard_kpi_unit_breakdown'], authenticateUser, async (req: Request, res: Response) => {
+  const periodId = req.query.period_id || req.query.p_period_id || req.body?.period_id || req.body?.p_period_id;
+  const unitId = req.query.unit_id || req.query.p_unit_id || req.body?.unit_id || req.body?.p_unit_id;
+  const assignmentStatus = req.query.assignment_status || req.query.p_assignment_status || req.body?.assignment_status || req.body?.p_assignment_status;
+  const resultMode = (req.query.result_mode || req.query.p_result_mode || req.body?.result_mode || req.body?.p_result_mode || 'all').toString().toLowerCase();    
+  const assigneeType = (req.query.assignee_type || req.query.p_assignee_type || req.body?.assignee_type || req.body?.p_assignee_type) as string;
+  const reviewStatus = (req.query.review_status || req.query.p_review_status || req.body?.review_status || req.body?.p_review_status) as string;
+  const completionStatus = (req.query.completion_status || req.query.p_completion_status || req.body?.completion_status || req.body?.p_completion_status) as string;
+  const effectiveFrom = (req.query.effective_from || req.query.p_effective_from || req.body?.effective_from || req.body?.p_effective_from) as string;
+  const effectiveTo = (req.query.effective_to || req.query.p_effective_to || req.body?.effective_to || req.body?.p_effective_to) as string;
+  const reqKpiKey = (req.query.kpi_key || req.query.p_kpi_key || req.body?.kpi_key || req.body?.p_kpi_key) as string;
+
+  if (!reqKpiKey) return res.status(400).json({ error: 'kpi_key is required for unit breakdown' });
+  if (!periodId) return res.status(400).json({ error: 'period_id is required' });
+
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin || getSupabaseAdminClient(req);
+    const userId = res.locals.user?.id;
+    const profile = res.locals.profile;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database unavailable' });
+
+    const userRole = profile?.system_role;
+    if (userRole !== 'manager' && userRole !== 'admin' && userRole !== 'executive') {
+      return res.status(403).json({ error: 'access_denied', message: 'Staff users are not authorized to access Manager Dashboard' });
+    }
+
+    const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, userRole);
+    if (!scopeData) return res.status(403).json({ error: 'access_denied' });
+
+    let allowedUnitIds = scopeData.scopeUnitIds;
+    if (unitId) {
+      if (!allowedUnitIds.has(unitId as string)) {
+        return res.status(403).json({ error: 'access_denied', message: 'Requested unit is outside your scope' });
+      }
+      const { data: allUnits } = await supabaseAdmin.from('organization_units').select('id, parent_id');
+      const requestedScope = getDescendantUnitIds(allUnits || [], unitId as string);
+      allowedUnitIds = new Set([...allowedUnitIds].filter(x => requestedScope.has(x)));
+    }
+    const allowedUnitsArr = Array.from(allowedUnitIds);
+    if (allowedUnitsArr.length === 0) return res.json([]);
+
+    let query = supabaseAdmin.from('kpi_assignments')
+      .select(`
+        id, period_id, template_id, status, assignee_type, assignee_user_id, assignee_organization_unit_id,
+        assignee_unit_name_snapshot, assignee_unit_id_snapshot,
+        effective_from, effective_to,
+        config
+      `)
+      .eq('period_id', periodId)
+      .or(`assignee_unit_id_snapshot.in.(${allowedUnitsArr.join(',')}),assignee_organization_unit_id.in.(${allowedUnitsArr.join(',')})`);
+
+    if (assigneeType && assigneeType !== 'all') query = query.eq('assignee_type', assigneeType);
+    if (assignmentStatus && assignmentStatus !== 'all') {
+      query = query.eq('status', assignmentStatus);
+    } else {
+      query = query.not('status', 'eq', 'draft');
+    }
+    if (resultMode === 'live') query = query.not('status', 'eq', 'locked');
+    else if (resultMode === 'official') query = query.eq('status', 'locked');
+    if (effectiveFrom) query = query.or(`effective_to.gte.${effectiveFrom},effective_to.is.null`);
+    if (effectiveTo) query = query.or(`effective_from.lte.${effectiveTo},effective_from.is.null`);
+
+    const { data: rawAssignments, error: asgnErr } = await query;
+    if (asgnErr) throw asgnErr;
+
+    const assignmentMap = new Map<string, any>();
+    for (const a of (rawAssignments || [])) {
+      const targetUnitId = a.assignee_type === 'individual'
+        ? (a.assignee_unit_id_snapshot || a.assignee_organization_unit_id)
+        : (a.assignee_organization_unit_id || a.assignee_unit_id_snapshot);
+      if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) continue;
+      assignmentMap.set(a.id, a);
+    }
+
+    let assignments = Array.from(assignmentMap.values());
+    if (assignments.length === 0) return res.json([]);
+    
+    // Filter assignments that have reviews if necessary
+    let { finalAssignments, liveScoreMap, officialScoreMap, liveItemsMap, officialItemsMap } = await applyAdvancedFiltersAndBatchResolve(supabaseAdmin, assignments, { reviewStatus, completionStatus });
+    assignments = finalAssignments;
+    if (assignments.length === 0) return res.json([]);
+
+    const assignmentIds = assignments.map(a => a.id);
+    const { data: allItems, error: itemsErr } = await supabaseAdmin
+      .from('kpi_assignment_items')
+      .select(`
+        id, assignment_id, kpi_definition_id, weight, cap_percent, target_config, scoring_config, definition_snapshot,
+        definition:kpi_definition_id(id, code, name, unit_code, measurement_type, direction, default_scoring_method)
+      `)
+      .in('assignment_id', assignmentIds);
+    if (itemsErr) throw itemsErr;
+    if (!allItems || allItems.length === 0) return res.json([]);
+
+    const { data: allUnits } = await supabaseAdmin.from('organization_units').select('id, name');
+    const unitMap = new Map<string, any>();
+    (allUnits || []).forEach((u: any) => unitMap.set(u.id, u));
+
+    let groupMap = new Map<string, any>();
+
+    for (const it of allItems) {
+      const parentAssignment = assignmentMap.get(it.assignment_id);
+      if (!parentAssignment) continue;
+      
+      const kpiKey = it.kpi_definition_id || (it.definition_snapshot?.code ? 'code:' + it.definition_snapshot.code : it.id);
+      if (kpiKey !== reqKpiKey) continue;
+
+      const uId = parentAssignment.assignee_type === 'individual'
+        ? (parentAssignment.assignee_unit_id_snapshot || parentAssignment.assignee_organization_unit_id)
+        : (parentAssignment.assignee_organization_unit_id || parentAssignment.assignee_unit_id_snapshot);
+      if (!uId) continue;
+
+      let uName = parentAssignment.assignee_type === 'individual' ? parentAssignment.assignee_unit_name_snapshot : undefined;
+      if (!uName && unitMap.has(uId)) uName = unitMap.get(uId).name;
+
+      let group = groupMap.get(uId);
+      if (!group) {
+        group = {
+          unit_id: uId,
+          unit_name: uName || 'Unknown',
+          assignment_ids: new Set<string>(),
+          item_count: 0,
+          scored_count: 0,
+          partial_count: 0,
+          unscored_count: 0,
+          live_count: 0,
+          official_count: 0,
+          achievement_percents: [],
+          raw_scores: [],
+          weighted_scores: [],
+          live_scores: [],
+          official_scores: []
+        };
+        groupMap.set(uId, group);
+      }
+
+      group.assignment_ids.add(it.assignment_id);
+      group.item_count++;
+
+      const isLocked = parentAssignment.status === 'locked';
+      
+      const reviewItem = parentAssignment.config?.review_items?.find((ri: any) => ri.assignment_item_id === it.id);
+      const configReviewItem = parentAssignment.config?.review?.items?.find((ri: any) => ri.assignment_item_id === it.id);
+      
+      let rawScore: number | null = null;
+      let weightedScore: number | null = null;
+      let achPercent: number | null = null;
+      let isScored = false;
+
+      // Extremely simplified scorer resolver for dashboard (similar to kpi_breakdown)
+      if (reviewItem) {
+        if (reviewItem.final_raw_score !== null && reviewItem.final_raw_score !== undefined) {
+          rawScore = Number(reviewItem.final_raw_score);
+          weightedScore = Number(reviewItem.final_weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+          achPercent = reviewItem.final_achievement_percent !== null && reviewItem.final_achievement_percent !== undefined ? Number(reviewItem.final_achievement_percent) : rawScore;
+          isScored = true;
+        } else if (reviewItem.score_snapshot?.score_result?.raw_score !== undefined) {
+          rawScore = Number(reviewItem.score_snapshot.score_result.raw_score);
+          weightedScore = Number(reviewItem.score_snapshot.score_result.weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+          achPercent = Number(reviewItem.score_snapshot.score_result.achievement_percent ?? rawScore);
+          isScored = true;
+        }
+      }
+      if (!isScored && configReviewItem) {
+        const snapScore = configReviewItem.score_snapshot?.score_result;
+        if (configReviewItem.final_raw_score !== null && configReviewItem.final_raw_score !== undefined) {
+          rawScore = Number(configReviewItem.final_raw_score);
+          weightedScore = Number(configReviewItem.final_weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+          achPercent = Number(configReviewItem.final_achievement_percent ?? rawScore);
+          isScored = true;
+        } else if (snapScore && snapScore.raw_score !== undefined) {
+          rawScore = Number(snapScore.raw_score);
+          weightedScore = Number(snapScore.weighted_score ?? (rawScore * (Number(it.weight) || 0)) / 100);
+          achPercent = Number(snapScore.achievement_percent ?? rawScore);
+          isScored = true;
+        }
+      }
+
+      if (isScored && rawScore !== null) {
+        if (isLocked) {
+          group.scored_count++;
+          group.official_count++;
+          group.official_scores.push(rawScore);
+        } else {
+          group.live_count++;
+          group.scored_count++; // Simplifying for dashboard unit coverage
+          group.live_scores.push(rawScore);
+        }
+      } else {
+        group.unscored_count++;
+      }
+    }
+
+    let sortedBreakdown = Object.values(Object.fromEntries(groupMap)).map((g: any) => {
+        const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
+        g.live_average_score = avg(g.live_scores);
+        g.official_average_score = avg(g.official_scores);
+        g.assignment_count = g.assignment_ids.size;
+        delete g.assignment_ids;
+        delete g.live_scores;
+        delete g.official_scores;
+        delete g.achievement_percents;
+        delete g.raw_scores;
+        delete g.weighted_scores;
+        return g;
+    });
+
+    sortedBreakdown = sortedBreakdown.sort((a: any, b: any) => b.assignment_count - a.assignment_count);
+    return res.json(sortedBreakdown);
+
+  } catch (err: any) {
+    console.error('[API kpi_get_dashboard_kpi_unit_breakdown] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get('/api/kpi/dashboard/export', authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const periodId = req.query.period_id as string;
+    const unitId = req.query.unit_id as string;
+    const assignmentStatus = req.query.assignment_status as string;
+    const resultMode = (req.query.result_mode || 'all').toString().toLowerCase();
+    const assigneeType = req.query.assignee_type as string;
+    const reviewStatus = req.query.review_status as string;
+    const completionStatus = req.query.completion_status as string;
+    const effectiveFrom = req.query.effective_from as string;
+    const effectiveTo = req.query.effective_to as string;
+    const reqKpiKey = req.query.kpi_key as string;
+    const format = req.query.format as string || 'xlsx';
+    
+    if (!periodId) return res.status(400).json({ error: 'Missing period_id' });
+
+    const supabaseAdmin = res.locals.supabaseAdmin || getSupabaseAdminClient(req);
+    const userId = res.locals.user.id;
+    const profile = res.locals.profile;
+    const userRole = profile?.system_role;
+
+    if (userRole !== 'manager' && userRole !== 'admin' && userRole !== 'executive') {
+      return res.status(403).json({ error: 'access_denied', message: 'Staff users are not authorized' });
+    }
+
+    const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, userRole);
+    if (!scopeData) return res.status(403).json({ error: 'access_denied' });
+    let allowedUnitIds = scopeData.scopeUnitIds;
+
+    if (unitId) {
+      if (!allowedUnitIds.has(unitId)) return res.status(403).json({ error: 'access_denied' });
+      const { data: allUnits } = await supabaseAdmin.from('organization_units').select('id, parent_id');
+      const requestedScope = getDescendantUnitIds(allUnits || [], unitId);
+      allowedUnitIds = new Set([...allowedUnitIds].filter(x => requestedScope.has(x)));
+    }
+    const allowedUnitsArr = Array.from(allowedUnitIds);
+    
+    if (allowedUnitsArr.length === 0) {
+      return res.status(404).send('Không có dữ liệu phù hợp để xuất.');
+    }
+
+    let query = supabaseAdmin.from('kpi_assignments')
+      .select(`
+        id, period_id, template_id, template_version_id, assignee_type, assignee_user_id, assignee_organization_unit_id,
+        assignee_unit_id_snapshot, status, effective_from, effective_to, created_at, assigned_at, config,
+        period:period_id(id, name),
+        template:template_id(id, name),
+        assignee_user:assignee_user_id(id, full_name),
+        assignee_unit:assignee_organization_unit_id(id, name),
+        snapshot_unit:assignee_unit_id_snapshot(id, name)
+      `)
+      .eq('period_id', periodId)
+      .or(`assignee_unit_id_snapshot.in.(${allowedUnitsArr.join(',')}),assignee_organization_unit_id.in.(${allowedUnitsArr.join(',')})`);
+
+    if (assigneeType && assigneeType !== 'all') query = query.eq('assignee_type', assigneeType);
+    if (assignmentStatus && assignmentStatus !== 'all') query = query.eq('status', assignmentStatus);
+    else query = query.not('status', 'eq', 'draft');
+    if (resultMode === 'live') query = query.not('status', 'eq', 'locked');
+    else if (resultMode === 'official') query = query.eq('status', 'locked');
+    if (effectiveFrom) query = query.or(`effective_to.gte.${effectiveFrom},effective_to.is.null`);
+    if (effectiveTo) query = query.or(`effective_from.lte.${effectiveTo},effective_from.is.null`);
+    query = query.order('created_at', { ascending: false });
+
+    const { data: rawAssignments, error } = await query;
+    if (error) throw error;
+
+    const assignmentMap = new Map<string, any>();
+    for (const a of (rawAssignments || [])) {
+      if (assignmentMap.has(a.id)) continue;
+      const targetUnitId = a.assignee_type === 'individual'
+        ? (a.assignee_unit_id_snapshot || a.assignee_organization_unit_id)
+        : (a.assignee_organization_unit_id || a.assignee_unit_id_snapshot);
+      if (!targetUnitId || !allowedUnitIds.has(targetUnitId)) continue;
+      assignmentMap.set(a.id, a);
+    }
+    let filteredAssignments = Array.from(assignmentMap.values());
+
+    const { finalAssignments, liveScoreMap, officialScoreMap, liveItemsMap, officialItemsMap, revMap } = await applyAdvancedFiltersAndBatchResolve(supabaseAdmin, filteredAssignments, { reviewStatus, completionStatus });
+
+    const ExcelJS = require('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Chi tiết KPI');
+
+    sheet.columns = [
+      { header: 'Kỳ KPI', key: 'period', width: 15 },
+      { header: 'Mã Assignment', key: 'assignment_id', width: 20 },
+      { header: 'Đối tượng', key: 'assignee_name', width: 25 },
+      { header: 'Loại đối tượng', key: 'assignee_type', width: 15 },
+      { header: 'Đơn vị', key: 'unit_name', width: 25 },
+      { header: 'Mã KPI', key: 'kpi_code', width: 15 },
+      { header: 'Tên KPI', key: 'kpi_name', width: 30 },
+      { header: 'Trạng thái Assignment', key: 'status', width: 15 },
+      { header: 'Trạng thái đánh giá', key: 'review_status', width: 15 },
+      { header: 'Loại kết quả', key: 'result_mode', width: 15 },
+      { header: 'Trạng thái dữ liệu', key: 'data_status', width: 15 },
+      { header: 'Trọng số', key: 'weight', width: 10 },
+      { header: 'Target', key: 'target', width: 15 },
+      { header: 'Actual', key: 'actual', width: 15 },
+      { header: 'Mức đạt (%)', key: 'ach', width: 15 },
+      { header: 'Điểm KPI', key: 'raw_score', width: 15 },
+      { header: 'Điểm theo trọng số', key: 'weighted_score', width: 20 },
+      { header: 'Từ ngày', key: 'from', width: 15 },
+      { header: 'Đến ngày', key: 'to', width: 15 }
+    ];
+    sheet.getRow(1).font = { bold: true };
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const sanitizeText = (text: any) => {
+      if (typeof text !== 'string') return text;
+      if (/^[=+ -@]/.test(text)) return "'" + text;
+      return text;
+    };
+
+    let hasData = false;
+    for (const a of finalAssignments) {
+      const isLocked = a.status === 'locked';
+      const itemsMap = isLocked ? officialItemsMap : liveItemsMap;
+      const items = itemsMap?.get(a.id) || [];
+      
+      const rev = revMap.get(a.id);
+      let rs = rev?.status || a.config?.review?.status || null;
+      if (!rs && isLocked) rs = 'approved';
+      if (!rs) rs = 'not_started';
+
+      let assigneeName = '';
+      let unitName = '';
+      if (a.assignee_type === 'individual') {
+        assigneeName = a.assignee_user?.full_name || '';
+        unitName = a.snapshot_unit?.name || a.assignee_unit?.name || '';
+      } else {
+        assigneeName = a.assignee_unit?.name || '';
+        unitName = a.assignee_unit?.name || a.snapshot_unit?.name || '';
+      }
+
+      for (const it of items) {
+        // Resolve item specifics
+        let kpiCode = it.definition?.code || it.definition_snapshot?.code || it.kpi_definition_id || '';
+        if (isLocked) {
+           kpiCode = it.score_snapshot?.definition_snapshot?.code || kpiCode;
+        }
+
+        const kKey = it.kpi_definition_id || (kpiCode ? 'code:'+kpiCode : it.id);
+        if (reqKpiKey && kKey !== reqKpiKey) continue;
+
+        let kpiName = it.definition?.name || it.definition_snapshot?.name || 'Unknown';
+        if (isLocked) {
+           kpiName = it.score_snapshot?.definition_snapshot?.name || kpiName;
+        }
+        
+        let weight = isLocked ? (Number(it.weight || it.score_snapshot?.weight) || 0) : (Number(it.weight) || 0);
+        
+        let target = '';
+        let actual = '';
+        let ach = '';
+        let rawScore = '';
+        let weightedScore = '';
+        let dataStatus = 'Chưa có điểm';
+
+        if (isLocked) {
+          // official item format from itemReviews or a.config.review_items
+          ach = it.final_achievement_percent !== null && it.final_achievement_percent !== undefined ? it.final_achievement_percent : (it.score_snapshot?.score_result?.achievement_percent || '');
+          rawScore = it.final_raw_score !== null && it.final_raw_score !== undefined ? it.final_raw_score : (it.score_snapshot?.score_result?.raw_score || '');
+          weightedScore = it.final_weighted_score !== null && it.final_weighted_score !== undefined ? it.final_weighted_score : (it.score_snapshot?.score_result?.weighted_score || '');
+          if (rawScore !== '') dataStatus = 'Đã có điểm';
+          target = it.score_snapshot?.target_config?.target_value || '';
+          actual = it.score_snapshot?.score_result?.actual_value || '';
+        } else {
+           if (it.resolved_is_scored) {
+             dataStatus = 'Đã có điểm';
+             ach = it.resolved_ach;
+             rawScore = it.resolved_raw;
+             weightedScore = it.resolved_weighted;
+             actual = it.resolved_actual;
+           }
+           target = it.target_config?.target_value || '';
+        }
+
+        const row = {
+          period: sanitizeText(a.period?.name || ''),
+          assignment_id: sanitizeText(a.id),
+          assignee_name: sanitizeText(assigneeName),
+          assignee_type: a.assignee_type === 'individual' ? 'Cá nhân' : 'Đơn vị',
+          unit_name: sanitizeText(unitName),
+          kpi_code: sanitizeText(kpiCode),
+          kpi_name: sanitizeText(kpiName),
+          status: a.status === 'locked' ? 'Đã khóa' : (a.status === 'active' ? 'Đang thực hiện' : a.status),
+          review_status: rs,
+          result_mode: isLocked ? 'Chính thức' : 'Tạm tính',
+          data_status: dataStatus,
+          weight: weight,
+          target: target,
+          actual: actual,
+          ach: ach !== '' ? Number(ach).toFixed(2) : '',
+          raw_score: rawScore !== '' ? Number(rawScore).toFixed(2) : '',
+          weighted_score: weightedScore !== '' ? Number(weightedScore).toFixed(2) : '',
+          from: a.effective_from ? new Date(a.effective_from).toISOString().split('T')[0] : '',
+          to: a.effective_to ? new Date(a.effective_to).toISOString().split('T')[0] : ''
+        };
+        sheet.addRow(row);
+        hasData = true;
+      }
+    }
+
+    if (!hasData) {
+      return res.status(404).send('Không có dữ liệu phù hợp để xuất.');
+    }
+
+    const scopeName = unitId ? 'Unit' : 'Dashboard';
+    const dateStr = new Date().toISOString().split('T')[0];
+    
+    if (format === 'csv') {
+      const csvBuffer = await workbook.csv.writeBuffer();
+      // Add UTF-8 BOM
+      const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+      const finalBuffer = Buffer.concat([bom, csvBuffer]);
+      const filename = `KPI_${periodId}_${scopeName}_${dateStr}.csv`;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.send(finalBuffer);
+    } else {
+      const filename = `KPI_${periodId}_${scopeName}_${dateStr}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+  } catch (err: any) {
+    console.error('[API kpi_export] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -7550,3 +8130,5 @@ startServer().catch((err) => {
   console.error('[server] Fatal startup error:', err);
   process.exit(1);
 });
+
+

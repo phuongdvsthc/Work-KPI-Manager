@@ -319,6 +319,11 @@ export interface KpiDashboardFilters {
   assignmentStatus?: KpiAssignmentStatus | 'all';
   resultMode: KpiDashboardResultMode;
   assigneeType?: KpiAssigneeType | 'all';
+  reviewStatus?: KpiReviewStatus | 'all';
+  completionStatus?: 'all' | 'complete' | 'partial' | 'unscored';
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  kpiKey?: string;
   search?: string;
   limit?: number;
   offset?: number;
@@ -444,3 +449,18 @@ export interface KpiDashboardKpiBreakdown {
   result_mode?: KpiDashboardResultMode;
 }
 
+
+
+export interface KpiDashboardKpiUnitBreakdown {
+  unit_id: string;
+  unit_name: string;
+  assignment_count: number;
+  item_count: number;
+  scored_count: number;
+  partial_count: number;
+  unscored_count: number;
+  live_count: number;
+  official_count: number;
+  live_average_score: number | null;
+  official_average_score: number | null;
+}

@@ -28,6 +28,11 @@ export function normalizeDashboardFilters(filters: KpiDashboardFilters): URLSear
   if (filters.assigneeType && filters.assigneeType !== 'all') params.append('assignee_type', filters.assigneeType);
   if (filters.assignmentStatus && filters.assignmentStatus !== 'all') params.append('assignment_status', filters.assignmentStatus);
   if (filters.resultMode) params.append('result_mode', filters.resultMode);
+  if (filters.reviewStatus && filters.reviewStatus !== 'all') params.append('review_status', filters.reviewStatus);
+  if (filters.completionStatus && filters.completionStatus !== 'all') params.append('completion_status', filters.completionStatus);
+  if (filters.effectiveFrom) params.append('effective_from', filters.effectiveFrom);
+  if (filters.effectiveTo) params.append('effective_to', filters.effectiveTo);
+  if (filters.kpiKey) params.append('kpi_key', filters.kpiKey);
   if (filters.limit !== undefined) params.append('limit', String(filters.limit));
   if (filters.offset !== undefined) params.append('offset', String(filters.offset));
   if (filters.search && filters.search.trim()) params.append('search', filters.search.trim());
@@ -42,7 +47,80 @@ export function normalizeDashboardFilters(filters: KpiDashboardFilters): URLSear
  * - Do not mix live and official results.
  * - Do not calculate business values in frontend code.
  */
+import { KpiDashboardKpiUnitBreakdown } from '../types/kpi';
 export const kpiDashboardService = {
+
+  async exportDashboard(filters: KpiDashboardFilters, format: 'xlsx' | 'csv' = 'xlsx'): Promise<void> {
+    try {
+      const token = await getAuthToken();
+      const params = normalizeDashboardFilters(filters);
+      params.append('format', format);
+
+      const res = await fetch(`/api/kpi/dashboard/export?${params.toString()}`, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      });
+
+      if (!res.ok) {
+        let msg = 'Export failed';
+        try {
+          const err = await res.json();
+          if (err.error) msg = err.message || err.error;
+        } catch {
+           if (res.status === 404) msg = 'Không có dữ liệu phù hợp để xuất.';
+        }
+        throw new Error(msg);
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      const contentDisposition = res.headers.get('Content-Disposition');
+      let filename = `KPI_Export_${new Date().toISOString().split('T')[0]}.${format}`;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+)"/);
+        if (match && match[1]) filename = match[1];
+      }
+
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      throw err;
+    }
+  },
+
+
+  async getKpiUnitBreakdown(filters: KpiDashboardFilters): Promise<{ data: KpiDashboardKpiUnitBreakdown[], error: string | null }> {
+    try {
+      const token = await getAuthToken();
+      const params = normalizeDashboardFilters(filters);
+      const res = await fetch(`/api/kpi/dashboard/kpi-unit-breakdown?${params.toString()}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      });
+      
+      if (!res.ok) {
+        if (res.status === 404) return { data: [], error: null };
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.message || errJson.error || `Failed to fetch KPI unit breakdown: status ${res.status}`);
+      }
+      
+      const json = await res.json();
+      return { data: Array.isArray(json) ? json : [], error: null };
+    } catch (err: any) {
+      console.error('[kpiDashboardService] getKpiUnitBreakdown error:', err);
+      return { data: [], error: err.message || 'Lỗi kết nối máy chủ' };
+    }
+  },
+
   /**
    * Fetch KPI periods for dashboard initialization and filtering.
    */

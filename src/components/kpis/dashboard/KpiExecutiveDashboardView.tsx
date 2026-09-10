@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Download, SlidersHorizontal, Calendar, Filter, RefreshCw, Loader2, Building2, Layers, BarChart2, Inbox, AlertCircle, Target, ChevronLeft, ChevronRight, Activity, AlertTriangle, Lock, Clock, Award, CheckCircle2 } from 'lucide-react';
+import { LayoutDashboard, Download, SlidersHorizontal, Calendar, Filter, RefreshCw, Loader2, Building2, Layers, BarChart2, Inbox, AlertCircle, Target, Activity, AlertTriangle, Lock, Clock, Award, CheckCircle2 } from 'lucide-react';
 import { kpiDashboardService } from '../../../services/kpiDashboardService';
-import { managerReportService } from '../../../services/manager-report.service';
-import { ManagerScopeOrgUnit } from '../../../types/manager-report';
+import { organizationService } from '../../../services/organizationService';
 import { KpiPeriod, KpiDashboardFilters, KpiDashboardUnitBreakdown, KpiDashboardKpiBreakdown, KpiDashboardSummary, KpiDashboardResultMode, KpiAssignmentStatus } from '../../../types/kpi';
 import { OrganizationUnit } from './../../../types/database';
 import { KpiAssignmentDetailView } from '../assignments/KpiAssignmentDetailView';
@@ -14,11 +13,7 @@ import { KpiStatusChart } from "./charts/KpiStatusChart";
 import { KpiUnitScoreChart } from "./charts/KpiUnitScoreChart";
 import { KpiPortfolioResultChart } from "./charts/KpiPortfolioResultChart";
 
-interface KpiManagerDashboardViewProps {
-  onNavigateToAssignments?: () => void;
-}
-
-export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = ({ onNavigateToAssignments }) => {
+export const KpiExecutiveDashboardView: React.FC = () => {
   // --- 1. Periods & Filter State ---
   
   const [isExporting, setIsExporting] = useState(false);
@@ -36,8 +31,8 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
   const [periods, setPeriods] = useState<KpiPeriod[]>([]);
   const [periodsLoading, setPeriodsLoading] = useState<boolean>(true);
   
-  const [scopeUnits, setScopeUnits] = useState<ManagerScopeOrgUnit[]>([]);
-  const [scopeLoading, setScopeLoading] = useState<boolean>(true);
+  const [orgUnits, setOrgUnits] = useState<OrganizationUnit[]>([]);
+  const [orgUnitsLoading, setOrgUnitsLoading] = useState<boolean>(true);
 
   const [filters, setFilters] = useState<KpiDashboardFilters>({
     periodId: '',
@@ -55,23 +50,11 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
 
   // --- 2. Data State from Read Models ---
   const [loading, setLoading] = useState<boolean>(false);
-  const hash = window.location.hash;
-  const drilldownAssignmentMatch = hash.match(/\/dashboard\/assignment\/([a-zA-Z0-9-]+)/);
-  const drilldownUnitAssignmentMatch = hash.match(/\/dashboard\/unit\/([a-zA-Z0-9-]+)\/assignment\/([a-zA-Z0-9-]+)/);
-  const drilldownKpiAssignmentMatch = hash.match(/\/dashboard\/kpi\/([^&]+)\/assignment\/([a-zA-Z0-9-]+)/);
-  const drilldownUnitMatch = hash.match(/\/dashboard\/unit\/([a-zA-Z0-9-]+)/);
-  const drilldownKpiMatch = hash.match(/\/dashboard\/kpi\/([^&/]+)$/);
-
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<KpiDashboardSummary | null>(null);
   const [unitBreakdown, setUnitBreakdown] = useState<KpiDashboardUnitBreakdown[]>([]);
-  const [assignments, setAssignments] = useState<any[]>([]);
-  const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
-  const [assignmentsLoading, setAssignmentsLoading] = useState<boolean>(false);
-  const [assignmentPage, setAssignmentPage] = useState<number>(1);
-  const [assignmentTotal, setAssignmentTotal] = useState<number>(0);
-  const assignmentPageSize = 20;
-
+  const [kpiBreakdown, setKpiBreakdown] = useState<KpiDashboardKpiBreakdown[]>([]);
+  const [kpiBreakdownError, setKpiBreakdownError] = useState<string | null>(null);
   const [unitBreakdownError, setUnitBreakdownError] = useState<string | null>(null);
 
   // --- 3. Period Initialization ---
@@ -100,7 +83,7 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
         }));
       }
     } catch (err: any) {
-      console.error('[KpiManagerDashboardView] Error initializing periods:', err);
+      console.error('[KpiExecutiveDashboardView] Error initializing periods:', err);
       setError('Không thể tải dữ liệu kỳ đánh giá. Vui lòng thử lại.');
     } finally {
       setPeriodsLoading(false);
@@ -108,14 +91,15 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
   }, []);
 
   const initializeScope = useCallback(async () => {
-    setScopeLoading(true);
+    setOrgUnitsLoading(true);
     try {
-      const { scope_units } = await managerReportService.getManagerScopeStaff();
-      setScopeUnits(scope_units);
+      // organizationService limits scope natively based on RLS/policies
+      const units = await organizationService.getUnits(true);
+      setOrgUnits(units || []);
     } catch (err) {
-      console.error('[KpiManagerDashboardView] Error initializing scope:', err);
+      console.error('[KpiExecutiveDashboardView] Error initializing scope:', err);
     } finally {
-      setScopeLoading(false);
+      setOrgUnitsLoading(false);
     }
   }, []);
 
@@ -135,7 +119,8 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
     setError(null);
     try {
       setUnitBreakdownError(null);
-            const [sumRes, unitRes, kpiRes] = await Promise.all([
+      setKpiBreakdownError(null);
+      const [sumRes, unitRes, kpiRes] = await Promise.all([
         kpiDashboardService.getSummary(activeFilters),
         kpiDashboardService.getUnitBreakdown(activeFilters),
         kpiDashboardService.getKpiBreakdown(activeFilters)
@@ -143,13 +128,13 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
 
       if (sumRes.error) throw sumRes.error;
       if (unitRes.error) setUnitBreakdownError(unitRes.error.message);
-      if (kpiRes.error) (kpiRes.error.message);
+      if (kpiRes.error) setKpiBreakdownError(kpiRes.error.message);
       
       setSummary(sumRes.data);
       setUnitBreakdown(unitRes.data || []);
-      (kpiRes.data || []);
+      setKpiBreakdown(kpiRes.data || []);
     } catch (err: any) {
-      console.error('[KpiManagerDashboardView] Fetch dashboard data error:', err);
+      console.error('[KpiExecutiveDashboardView] Fetch dashboard data error:', err);
       setError('Không thể tải dữ liệu tổng quan KPI.');
     } finally {
       setLoading(false);
@@ -190,12 +175,19 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
   };
 
 
+  const hash = window.location.hash;
+  const drilldownAssignmentMatch = hash.match(/\/executive-dashboard\/assignment\/([a-zA-Z0-9-]+)/);
+  const drilldownUnitAssignmentMatch = hash.match(/\/executive-dashboard\/unit\/([a-zA-Z0-9-]+)\/assignment\/([a-zA-Z0-9-]+)/);
+  const drilldownKpiAssignmentMatch = hash.match(/\/executive-dashboard\/kpi\/([^&]+)\/assignment\/([a-zA-Z0-9-]+)/);
+  const drilldownUnitMatch = hash.match(/\/executive-dashboard\/unit\/([a-zA-Z0-9-]+)/);
+  const drilldownKpiMatch = hash.match(/\/executive-dashboard\/kpi\/([^&/]+)$/);
+
   
   if (drilldownUnitAssignmentMatch) {
     return (
       <KpiAssignmentDetailView
         assignmentId={drilldownUnitAssignmentMatch[2]}
-        onBack={() => { window.location.hash = `#/kpis/dashboard/unit/${drilldownUnitAssignmentMatch[1]}`; }}
+        onBack={() => { window.location.hash = `#/kpis/executive-dashboard/unit/${drilldownUnitAssignmentMatch[1]}`; }}
       />
     );
   }
@@ -204,7 +196,7 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
     return (
       <KpiAssignmentDetailView
         assignmentId={drilldownKpiAssignmentMatch[2]}
-        onBack={() => { window.location.hash = `#/kpis/dashboard/kpi/${drilldownKpiAssignmentMatch[1]}`; }}
+        onBack={() => { window.location.hash = `#/kpis/executive-dashboard/kpi/${drilldownKpiAssignmentMatch[1]}`; }}
       />
     );
   }
@@ -213,7 +205,7 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
     return (
       <KpiAssignmentDetailView
         assignmentId={drilldownAssignmentMatch[1]}
-        onBack={() => { window.location.hash = "#/kpis/dashboard"; }}
+        onBack={() => { window.location.hash = "#/kpis/executive-dashboard"; }}
       />
     );
   }
@@ -222,7 +214,7 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
       <KpiUnitDetailView
         unitId={drilldownUnitMatch[1]}
         filters={filters}
-        onBack={() => { window.location.hash = "#/kpis/dashboard"; }}
+        onBack={() => { window.location.hash = "#/kpis/executive-dashboard"; }}
       />
     );
   }
@@ -231,8 +223,8 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
       <KpiDetailView
         kpiKey={drilldownKpiMatch[1]}
         filters={filters}
-        onBack={() => { window.location.hash = '#/kpis/dashboard'; }}
-        onNavigateToAssignment={(id) => { window.location.hash = `#/kpis/dashboard/kpi/${drilldownKpiMatch[1]}/assignment/${id}`; }}
+        onBack={() => { window.location.hash = '#/kpis/executive-dashboard'; }}
+        onNavigateToAssignment={(id) => { window.location.hash = `#/kpis/executive-dashboard/kpi/${drilldownKpiMatch[1]}/assignment/${id}`; }}
       />
     );
   }
@@ -428,7 +420,7 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
                       className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-xs focus:border-indigo-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
                     >
                       <option value="">Tất cả đơn vị</option>
-                      {scopeUnits.map((u) => (
+                      {orgUnits.map((u) => (
                         <option key={u.id} value={u.id}>
                           {u.name}
                         </option>
@@ -754,7 +746,7 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
                 <p className="font-medium text-sm">Không thể tải dữ liệu KPI theo đơn vị.</p>
               </div>
             ) : (
-              <KpiUnitBreakdownTable 
+              <KpiUnitBreakdownTable onUnitClick={(unitId) => { window.location.hash = `#/kpis/executive-dashboard/unit/${unitId}`; }} 
                 data={unitBreakdown} 
                 resultMode={filters.resultMode} 
                 showDetailCounts={true} 
@@ -763,104 +755,30 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
             </div>
           </div>
 
-                    {/* SECTION 5: Assignments List */}
+          {/* SECTION 5: KPI Portfolio / Breakdown */}
           <div
-            id="kpi-dashboard-assignments-section"
-            className="rounded-xl border border-slate-200 bg-white shadow-xs"
+            id="kpi-executive-portfolio-section"
+            className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs"
           >
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Target className="h-5 w-5 text-indigo-600" />
-                <h2 className="text-lg font-bold text-slate-800">Danh sách KPI được giao</h2>
-              </div>
+            <div className="flex items-center gap-2 mb-3">
+              <Inbox className="h-4 w-4 text-indigo-600" />
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-700">
+                Phân bổ chỉ tiêu (KPI Portfolio)
+              </h2>
             </div>
-            
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-50 border-y border-slate-200">
-                  <tr>
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-600 uppercase tracking-wider">Đơn vị</th>
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-600 uppercase tracking-wider">Người nhận</th>
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-600 uppercase tracking-wider">Chỉ tiêu (Target)</th>
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-600 uppercase tracking-wider">Tình trạng</th>
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-600 uppercase tracking-wider text-right">Hành động</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 bg-white">
-                  {assignmentsLoading ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                        <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />
-                        Đang tải danh sách...
-                      </td>
-                    </tr>
-                  ) : assignmentsError ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-red-500 font-medium">
-                        {assignmentsError}
-                      </td>
-                    </tr>
-                  ) : assignments.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-slate-500 font-medium">
-                        Không có dữ liệu KPI
-                      </td>
-                    </tr>
-                  ) : (
-                    assignments.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-4 py-3 text-sm text-slate-800">{item.assignee_unit_name || item.assignee_unit_id}</td>
-                        <td className="px-4 py-3">
-                          <div className="text-sm font-medium text-slate-800">{item.assignee_name || 'N/A'}</div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-slate-600">{item.target_value}</td>
-                        <td className="px-4 py-3">
-                          {item.status === 'official' ? (
-                            <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">Chính thức</span>
-                          ) : item.status === 'live' ? (
-                            <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">Tạm tính</span>
-                          ) : (
-                            <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-slate-100 text-slate-700 border border-slate-200">{item.status}</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() => { window.location.hash = `#/kpis/dashboard/assignment/${item.id}`; }}
-                            className="text-indigo-600 hover:text-indigo-900 text-sm font-medium transition-colors"
-                          >
-                            Xem
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-            
-            {!assignmentsLoading && !assignmentsError && assignmentTotal > assignmentPageSize && (
-              <div className="p-4 border-t border-slate-100 flex items-center justify-between">
-                <span className="text-sm text-slate-500">
-                  Hiển thị {(assignmentPage - 1) * assignmentPageSize + 1} - {Math.min(assignmentPage * assignmentPageSize, assignmentTotal)} trong {assignmentTotal}
-                </span>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setAssignmentPage(p => Math.max(1, p - 1))}
-                    disabled={assignmentPage === 1}
-                    className="p-1.5 rounded bg-slate-100 text-slate-600 disabled:opacity-50 hover:bg-slate-200"
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => setAssignmentPage(p => p + 1)}
-                    disabled={assignmentPage * assignmentPageSize >= assignmentTotal}
-                    className="p-1.5 rounded bg-slate-100 text-slate-600 disabled:opacity-50 hover:bg-slate-200"
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
+            <div>
+            {kpiBreakdownError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50/80 p-5 text-red-800 shadow-xs flex items-center gap-3">
+                <AlertCircle className="h-5 w-5 text-red-600 shrink-0" />
+                <p className="font-medium text-sm">Không thể tải dữ liệu danh mục KPI.</p>
               </div>
+            ) : (
+              <KpiPortfolioTable onKpiClick={(kpiKey) => { window.location.hash = `#/kpis/executive-dashboard/kpi/${encodeURIComponent(kpiKey)}`; }} 
+                data={kpiBreakdown} 
+                resultMode={filters.resultMode} 
+              />
             )}
+            </div>
           </div>
 
           {/* SECTION 6: Charts */}
@@ -879,7 +797,12 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
               loading={loading} 
               error={unitBreakdownError} 
             />
-            
+            <KpiPortfolioResultChart
+              kpiBreakdown={kpiBreakdown}
+              resultMode={filters.resultMode}
+              loading={loading}
+              error={kpiBreakdownError}
+            />
           </div>
         </div>
       )}
