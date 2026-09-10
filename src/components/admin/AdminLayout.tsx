@@ -5,6 +5,7 @@ import { UserForm } from './users/UserForm';
 import { OrganizationListView } from './organizations/OrganizationListView';
 import { OrganizationFormView } from './organizations/OrganizationFormView';
 import { SystemSettingsView } from './settings/SystemSettingsView';
+import { AiSettingsView } from './settings/AiSettingsView';
 import { ReportSourceAdminView } from './ReportSourceAdminView';
 
 export const AdminLayout: React.FC = () => {
@@ -15,7 +16,7 @@ export const AdminLayout: React.FC = () => {
   // admin/users
   // admin/users/new
   // admin/users/:id/edit
-  const [currentRoute, setCurrentRoute] = useState<'metrics' | 'users' | 'users/new' | 'users/edit' | 'orgs' | 'orgs/new' | 'orgs/edit' | 'settings'>('users');
+  const [currentRoute, setCurrentRoute] = useState<'metrics' | 'users' | 'users/new' | 'users/edit' | 'orgs' | 'orgs/new' | 'orgs/edit' | 'settings' | 'ai-settings'>('users');
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
 
@@ -50,6 +51,8 @@ export const AdminLayout: React.FC = () => {
         }
       } else if (hash === 'admin/organization-units') {
         setCurrentRoute('orgs');
+      } else if (hash === 'admin/ai-settings') {
+        setCurrentRoute('ai-settings');
       } else if (hash === 'admin/settings') {
         setCurrentRoute('settings');
       } else if (hash === 'admin/users' || hash === 'admin') {
@@ -84,6 +87,9 @@ export const AdminLayout: React.FC = () => {
 <a href="#/admin/settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
           Cấu hình hệ thống
         </a>
+        <a href="#/admin/ai-settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'ai-settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+          Cấu hình AI
+        </a>
       </div>
         <MetricAdminView />
       </div>
@@ -115,6 +121,9 @@ export const AdminLayout: React.FC = () => {
 <a href="#/admin/settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
           Cấu hình hệ thống
         </a>
+        <a href="#/admin/ai-settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'ai-settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+          Cấu hình AI
+        </a>
       </div>
         <OrganizationListView />
       </div>
@@ -140,6 +149,9 @@ export const AdminLayout: React.FC = () => {
         </a>
         <a href="#/admin/settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
           Cấu hình hệ thống
+        </a>
+        <a href="#/admin/ai-settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'ai-settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+          Cấu hình AI
         </a>
       </div>
         <ReportSourceAdminView />
@@ -167,8 +179,36 @@ export const AdminLayout: React.FC = () => {
 <a href="#/admin/settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
           Cấu hình hệ thống
         </a>
+        <a href="#/admin/ai-settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'ai-settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+          Cấu hình AI
+        </a>
       </div>
         <SystemSettingsView />
+      </div>
+    );
+  }
+
+  if (currentRoute === 'ai-settings') {
+    return (
+      <div className="space-y-4">
+        <div className="flex border-b border-slate-200 mb-6 overflow-x-auto">
+          <a href="#/admin/users" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute.startsWith('users') ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+            Quản lý Người dùng
+          </a>
+          <a href="#/admin/organization-units" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute.startsWith('orgs') ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+            Cơ cấu Tổ chức
+          </a>
+          <a href="#/admin/metrics" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'metrics' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+            Kênh / Nguồn báo cáo
+          </a>
+          <a href="#/admin/settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+            Cấu hình hệ thống
+          </a>
+          <a href="#/admin/ai-settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'ai-settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+            Cấu hình AI
+          </a>
+        </div>
+        <AiSettingsView />
       </div>
     );
   }
@@ -196,6 +236,9 @@ export const AdminLayout: React.FC = () => {
         </a>
 <a href="#/admin/settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
           Cấu hình hệ thống
+        </a>
+        <a href="#/admin/ai-settings" className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${currentRoute === 'ai-settings' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:border-indigo-600 border-b-2 border-transparent'}`}>
+          Cấu hình AI
         </a>
       </div>
       <UserManagementView />

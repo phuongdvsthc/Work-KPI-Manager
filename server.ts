@@ -1,7 +1,10 @@
+import { registerAiAuditRoutes } from './src/services/ai/aiAuditApi';
+import { registerPromptRegistryRoutes } from './src/services/ai/promptRegistryApi';
 import crypto from 'crypto';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import express, { Request, Response } from 'express';
+import { aiService } from './src/services/ai/aiService';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
@@ -63,7 +66,8 @@ async function startServer() {
 
       let authUser: { id: string; email?: string } | null = null;
       try {
-        const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+        const supabaseAdmin = getSupabaseAdminClient(req);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
         if (!authError && user) {
           authUser = user;
         }
@@ -145,7 +149,8 @@ async function startServer() {
 
       let authUser: { id: string; email?: string } | null = null;
       try {
-        const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+        const supabaseAdmin = getSupabaseAdminClient(req);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
         if (!authError && user) {
           authUser = user;
         }
@@ -3014,7 +3019,86 @@ async function startServer() {
   });
 
   // GET Admin Settings
-  app.get('/api/admin/settings', authenticateAdmin, async (req: Request, res: Response) => {
+  
+  // --------------------------------------------------------
+  // ADMIN AI CONFIG (v0.5-A3)
+  // --------------------------------------------------------
+  
+  
+  registerPromptRegistryRoutes(app, authenticateAdmin, getSupabaseAdminClient);
+
+  registerAiAuditRoutes(app, authenticateAdmin, getSupabaseAdminClient);
+app.get('/api/admin/ai-config', authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const supabaseAdmin = res.locals.supabaseAdmin;
+      const { aiConfigService } = await import('./src/services/ai/aiConfigService');
+      const publicConfig = await aiConfigService.getPublicConfig(supabaseAdmin);
+      res.json(publicConfig);
+    } catch (err: any) {
+      console.error('[API admin ai-config get] Error:', err);
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  });
+
+  app.put('/api/admin/ai-config', authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const supabaseAdmin = res.locals.supabaseAdmin;
+      const { enabled, provider, model, apiKey } = req.body;
+      
+      if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled boolean required' });
+      if (!provider) return res.status(400).json({ error: 'provider required' });
+      if (enabled && !model) return res.status(400).json({ error: 'model required when enabled' });
+
+      const { aiConfigService } = await import('./src/services/ai/aiConfigService');
+      await aiConfigService.saveConfig(supabaseAdmin, { enabled, provider, model, apiKey });
+      
+      const publicConfig = await aiConfigService.getPublicConfig(supabaseAdmin);
+      res.json(publicConfig);
+    } catch (err: any) {
+      console.error('[API admin ai-config put] Error:', err);
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  });
+
+  app.post('/api/admin/ai-config/test', authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const supabaseAdmin = res.locals.supabaseAdmin;
+      const { provider, model, apiKey } = req.body;
+      
+      if (!provider || !model) return res.status(400).json({ error: 'provider and model required' });
+
+      const { aiConfigService } = await import('./src/services/ai/aiConfigService');
+      const { createAIProvider, NullAIProvider } = await import('./src/services/ai/aiProvider');
+
+      // Draft config
+      let baseConfig = await aiConfigService.resolve(supabaseAdmin);
+      let testConfig = { ...baseConfig };
+      testConfig.provider = provider;
+      testConfig.model = model;
+      if (apiKey !== undefined && apiKey.trim() !== '') {
+        testConfig.apiKey = apiKey.trim();
+      }
+      testConfig.enabled = true; // force enabled for test
+
+      const aiProvider = createAIProvider(testConfig);
+      
+      if (aiProvider instanceof NullAIProvider && !testConfig.apiKey) {
+        return res.status(400).json({ error: 'Chưa cấu hình API Key' });
+      }
+
+      const isHealthy = await aiProvider.healthCheck();
+      if (!isHealthy) {
+        return res.status(500).json({ error: 'Không thể kết nối đến nhà cung cấp AI' });
+      }
+
+      res.json({ success: true, message: 'Kết nối thành công', provider, model });
+    } catch (err: any) {
+      console.error('[API admin ai-config test] Error:', err);
+      res.status(500).json({ error: err.message || 'Lỗi kiểm tra kết nối' });
+    }
+  });
+
+app.get('/api/admin/settings', authenticateAdmin, async (req: Request, res: Response) => {
     const supabaseAdmin = res.locals.supabaseAdmin;
     try {
       const { data: rootOrg } = await supabaseAdmin
@@ -8107,6 +8191,38 @@ app.get('/api/kpi/dashboard/export', authenticateUser, async (req: Request, res:
   }
 });
 
+  // ==========================================
+app.post('/api/ai/summary', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: 'Missing authorization' });
+    const token = authHeader.replace('Bearer ', '');
+    const supabaseAdmin = getSupabaseAdminClient(req);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    if (authError || !user) return res.status(401).json({ error: 'Invalid token' });
+
+    const { data: profile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single();
+    if (!profile) return res.status(401).json({ error: 'No profile' });
+
+    // The AI Service orchestrates building context and calling the Provider.
+    // We do NOT pass the raw database to the AI Provider, only sanitized structured context.
+    
+    
+    const aiResponse = await aiService.generateSummary(supabaseAdmin, {
+      userId: user.id,
+      userRole: profile.role,
+      featureKey: 'kpi_summary'
+    });
+
+    res.json(aiResponse);
+  } catch (err: any) {
+    console.error('[API ai_summary] Error:', err);
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
+
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -8132,3 +8248,5 @@ startServer().catch((err) => {
 });
 
 
+// ==========================================
+// AI MODULE (v0.5-A1)

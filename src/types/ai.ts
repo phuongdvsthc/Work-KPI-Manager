@@ -1,43 +1,107 @@
 /**
- * Independent AI Service Interfaces & Types
- * Độc lập với Supabase và giao diện người dùng, sẵn sàng tích hợp các mô hình AI (như Gemini) 
- * phục vụ tự động hóa quản lý công việc, phân tích KPI và tạo báo cáo học đường.
+ * AI Service Contracts for Cross-Module Integration
+ * Defines the strict boundaries between business data, AI contexts, and external AI providers.
  */
 
-export interface AIAnalysisRequest {
-  type: 'kpi_summary' | 'task_breakdown' | 'report_generation' | 'performance_insight';
-  context: {
-    unitName?: string;
-    unitCode?: string;
-    timeframe?: string;
-    rawMetrics?: Record<string, unknown>;
-    tasks?: Record<string, unknown>[];
-    notes?: string;
-  };
-  options?: {
-    language?: 'vi' | 'en';
-    tone?: 'formal' | 'concise' | 'detailed';
-    maxOutputTokens?: number;
-  };
+export interface AIContextRequest {
+  userId: string;
+  userRole: string;
+  targetUnitId?: string;
+  targetPeriodId?: string;
+  targetAssignmentIds?: string[];
+  targetTaskIds?: string[];
+  featureKey: 'kpi_summary' | 'risk_detection' | 'task_breakdown';
 }
 
-export interface AIAnalysisResponse {
-  success: boolean;
+export interface AIContextData {
+  authorizedScope: {
+    unitIds: string[];
+    isExecutive: boolean;
+  };
+  period?: any;
+  kpiAssignments?: any[];
+  tasks?: any[];
+  metrics?: any[];
+  timestamp: string;
+  userPrompt?: string;
+}
+
+export interface AIProviderOptions {
+  modelAlias?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface AIProvider {
+  generateText(prompt: string, contextData: AIContextData, options?: AIProviderOptions): Promise<{ text: string, usage?: ProviderUsageMetadata }>;
+  generateStructured<T>(prompt: string, contextData: AIContextData, schema: Record<string, any>, options?: AIProviderOptions): Promise<{ data: T, usage?: ProviderUsageMetadata }>;
+  healthCheck(): Promise<boolean>;
+}
+
+export interface ProviderUsageMetadata {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  finish_reason?: string;
+}
+
+export interface AIPromptDefinition {
+  key: string;
+  version: string;
+  purpose: string;
+  systemInstruction: string;
+  expectedSchema?: Record<string, any>;
+}
+
+export interface AIStructuredResponse {
   summary: string;
-  keyInsights: string[];
-  recommendations: string[];
-  suggestedActionItems?: {
+  highlights: string[];
+  risks: {
+    description: string;
+    severity: 'low' | 'medium' | 'high';
+  }[];
+  suggested_actions: {
     title: string;
-    priority: 'low' | 'medium' | 'high';
     assigneeRole?: string;
   }[];
-  generatedAt: string;
-  modelUsed?: string;
-  error?: string;
+  evidence: {
+    type: 'kpi_assignment' | 'task' | 'metric';
+    id: string;
+    reference_value?: string;
+  }[];
 }
 
-export interface AIService {
-  analyzeKPI(request: AIAnalysisRequest): Promise<AIAnalysisResponse>;
-  generateReportDraft(request: AIAnalysisRequest): Promise<AIAnalysisResponse>;
-  suggestTaskBreakdown(goalTitle: string, unitContext?: string): Promise<AIAnalysisResponse>;
+export interface AIAuditLog {
+  user_id: string;
+  feature_key: string;
+  prompt_version: string;
+  provider: string;
+  model: string;
+  request_timestamp: string;
+  response_timestamp: string;
+  status: 'success' | 'error' | 'timeout';
+  error_code?: string;
+}
+
+// 7. Configuration Contracts
+export interface AIProviderConfig {
+  provider: string;
+  model: string;
+  apiKey: string;
+  enabled: boolean;
+}
+
+export interface AIPublicConfig {
+  provider: string;
+  model: string;
+  enabled: boolean;
+  apiKeyConfigured: boolean;
+  apiKeyMasked?: string;
+}
+
+export class AIConfigError extends Error {
+  constructor(public code: 'AI_DISABLED' | 'AI_NOT_CONFIGURED', message: string) {
+    super(message);
+    this.name = 'AIConfigError';
+  }
 }
