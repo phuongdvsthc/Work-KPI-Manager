@@ -22,14 +22,21 @@ export const aiConfigService = {
         .single();
         
       if (data && data.setting_value) {
-        const raw = data.setting_value;
+        let raw = data.setting_value;
+        if (typeof raw === 'string') {
+          try {
+            raw = JSON.parse(raw);
+          } catch (e) {
+            console.error('[aiConfigService] Failed to parse setting_value JSON string', e);
+          }
+        }
         dbConfig = {
-          provider: raw.provider,
-          model: raw.model,
-          enabled: raw.enabled
+          provider: raw?.provider,
+          model: raw?.model,
+          enabled: raw?.enabled
         };
 
-        if (raw.apiKeyEncrypted && raw.apiKeyIv && raw.apiKeyAuthTag) {
+        if (raw?.apiKeyEncrypted && raw?.apiKeyIv && raw?.apiKeyAuthTag) {
           try {
             dbConfig.apiKey = aiCrypto.decrypt(raw.apiKeyEncrypted, raw.apiKeyIv, raw.apiKeyAuthTag);
           } catch (e) {
@@ -43,7 +50,7 @@ export const aiConfigService = {
 
     const envConfig = {
       provider: process.env.AI_PROVIDER || 'gemini',
-      model: process.env.AI_MODEL || 'gemini-2.5-flash',
+      model: process.env.AI_MODEL || 'gemini-3.8-flash',
       apiKey: process.env.AI_API_KEY || process.env.GEMINI_API_KEY || '',
       enabled: process.env.AI_ENABLED === 'true' || process.env.AI_ENABLED === '1'
     };
@@ -94,7 +101,13 @@ export const aiConfigService = {
         .select('setting_value')
         .eq('setting_key', 'ai_global_config')
         .single();
-      if (data && data.setting_value) existingRaw = data.setting_value;
+      if (data && data.setting_value) {
+        try {
+          existingRaw = typeof data.setting_value === 'string' ? JSON.parse(data.setting_value) : data.setting_value;
+        } catch (e) {
+          existingRaw = {};
+        }
+      }
     } catch (e) {
       // No existing config
     }

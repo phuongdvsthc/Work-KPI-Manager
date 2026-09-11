@@ -1,4 +1,5 @@
 import { AIPromptDefinition, AIPromptVersion, AIPromptResolutionResult, AIPromptError, PromptErrorCodes } from '../../types/ai_prompt';
+import { aiPromptRegistry } from './aiPromptRegistry';
 
 const cache = new Map<string, { definition: AIPromptDefinition; activeVersion: AIPromptVersion; timestamp: number }>();
 const CACHE_TTL = 60 * 1000; // 1 minute
@@ -19,46 +20,57 @@ export const aiPromptRegistryService = {
     const now = Date.now();
     const cached = cache.get(promptKey);
 
-    let definition: AIPromptDefinition;
-    let activeVersion: AIPromptVersion;
+    let definition: any;
+    let activeVersion: any;
 
     if (cached && (now - cached.timestamp < CACHE_TTL)) {
       definition = cached.definition;
       activeVersion = cached.activeVersion;
     } else {
-      // Fetch from DB
-      const { data: defData, error: defError } = await supabaseAdmin
-        .from('ai_prompt_definitions')
-        .select('*')
-        .eq('prompt_key', promptKey)
-        .single();
+      // Try DB first
+      try {
+        const { data: defData, error: defError } = await supabaseAdmin
+          .from('ai_prompt_definitions')
+          .select('*')
+          .eq('prompt_key', promptKey)
+          .single();
 
-      if (defError || !defData) {
-        throw new AIPromptError(PromptErrorCodes.NOT_FOUND, `Prompt definition not found: ${promptKey}`);
+        if (defData) {
+          definition = defData;
+          const { data: verData } = await supabaseAdmin
+            .from('ai_prompt_versions')
+            .select('*')
+            .eq('prompt_definition_id', definition.id)
+            .eq('status', 'active')
+            .single();
+            
+          if (verData) {
+            activeVersion = verData;
+          }
+        }
+      } catch(e) {
+        // ignore DB errors
       }
-      definition = defData as AIPromptDefinition;
 
-      if (!definition.enabled) {
-        throw new AIPromptError(PromptErrorCodes.DISABLED, `Prompt is disabled: ${promptKey}`);
-      }
-
-      const { data: verData, error: verError } = await supabaseAdmin
-        .from('ai_prompt_versions')
-        .select('*')
-        .eq('prompt_definition_id', definition.id)
-        .eq('status', 'active')
-        .single();
-
-      if (verError || !verData) {
-        throw new AIPromptError(PromptErrorCodes.NOT_ACTIVE, `No active version found for prompt: ${promptKey}`);
-      }
-      activeVersion = verData as AIPromptVersion;
-
-      // Validate schema if structured
-      if (activeVersion.output_mode === 'structured') {
-         if (!activeVersion.response_schema || typeof activeVersion.response_schema !== 'object') {
-             throw new AIPromptError(PromptErrorCodes.INVALID_SCHEMA, `Invalid response schema for structured output in prompt: ${promptKey}`);
+      // Fallback to static registry
+      if (!definition || !activeVersion) {
+         const staticDef = aiPromptRegistry[promptKey];
+         if (!staticDef) {
+           throw new AIPromptError(PromptErrorCodes.NOT_FOUND, `Prompt definition not found: ${promptKey}`);
          }
+         definition = {
+           id: 'static-' + promptKey,
+           prompt_key: promptKey,
+           enabled: true
+         };
+         activeVersion = {
+           id: 'static-v1-' + promptKey,
+           version_number: 1,
+           output_mode: 'structured',
+           system_prompt: staticDef.systemInstruction,
+           user_prompt_template: 'Hãy tóm tắt báo cáo công việc từ ngày {{dateFrom}} đến {{dateTo}}. Số lượng báo cáo: {{reportCount}}.',
+           response_schema: staticDef.expectedSchema
+         };
       }
 
       cache.set(promptKey, { definition, activeVersion, timestamp: now });
@@ -69,13 +81,14 @@ export const aiPromptRegistryService = {
     }
 
     const renderedUserPrompt = this.renderPromptTemplate(activeVersion.user_prompt_template || '', variables);
+    const renderedSystemPrompt = this.renderPromptTemplate(activeVersion.system_prompt || '', variables);
 
     return {
       promptKey: definition.prompt_key,
       promptDefinitionId: definition.id,
       promptVersionId: activeVersion.id,
       versionNumber: activeVersion.version_number,
-      systemPrompt: activeVersion.system_prompt || '',
+      systemPrompt: renderedSystemPrompt,
       renderedUserPrompt,
       outputMode: activeVersion.output_mode,
       responseSchema: activeVersion.response_schema,
@@ -95,9 +108,22 @@ export const aiPromptRegistryService = {
   },
   
   async getDefinition(supabaseAdmin: any, idOrKey: string): Promise<AIPromptDefinition | null> {
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrKey);
-      const col = isUUID ? 'id' : 'prompt_key';
-      const { data } = await supabaseAdmin.from('ai_prompt_definitions').select('*').eq(col, idOrKey).single();
-      return data;
+      try {
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrKey);
+        const col = isUUID ? 'id' : 'prompt_key';
+        const { data } = await supabaseAdmin.from('ai_prompt_definitions').select('*').eq(col, idOrKey).single();
+        if (data) return data;
+      } catch (e) {}
+      
+      const staticDef = aiPromptRegistry[idOrKey];
+      if (staticDef) {
+         return {
+           id: 'static-' + idOrKey,
+           prompt_key: idOrKey,
+           name: idOrKey,
+           enabled: true
+         } as any;
+      }
+      return null;
   }
 };

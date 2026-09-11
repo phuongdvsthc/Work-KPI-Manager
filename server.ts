@@ -1,3 +1,4 @@
+import { dailyReportIntelligenceService } from './src/services/ai/dailyReportIntelligence.service';
 import { resolveManagerScopeUnits } from './src/services/managerScopeService';
 import { applyAdvancedFiltersAndBatchResolve, resolveLiveScoresBatch, resolveOfficialScoresBatch } from './src/services/kpiDashboardResolver';
 import { registerAiAuditRoutes } from './src/services/ai/aiAuditApi';
@@ -3855,6 +3856,13 @@ app.get('/api/admin/settings', authenticateAdmin, async (req: Request, res: Resp
 
       if (report.user_id !== currentUser.id && profile.system_role === 'staff') {
         return res.status(403).json({ error: 'Không có quyền xem báo cáo này.' });
+      }
+
+      if (profile.system_role === 'manager') {
+        const scopeData = await resolveManagerScopeUnits(supabaseAdmin, currentUser.id, profile.system_role);
+        if (!scopeData || !scopeData.scopeUnitIds || !scopeData.scopeUnitIds.has(report.organization_unit_id)) {
+          return res.status(403).json({ error: 'Không có quyền xem báo cáo của đơn vị ngoài phạm vi quản lý.' });
+        }
       }
 
       const { data: taskLinks } = await supabaseAdmin
@@ -7867,22 +7875,66 @@ app.get('/api/kpi/dashboard/export', authenticateUser, async (req: Request, res:
 });
 
   // ==========================================
-app.post('/api/ai/summary', async (req, res) => {
+
+app.post('/api/ai/daily-report/intelligence', authenticateUser, async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: 'Missing authorization' });
-    const token = authHeader.replace('Bearer ', '');
-    const supabaseAdmin = getSupabaseAdminClient(req);
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
-    if (authError || !user) return res.status(401).json({ error: 'Invalid token' });
+    const supabaseAdmin = res.locals.supabaseAdmin;
+    const user = res.locals.user;
+    const profile = res.locals.profile;
 
-    const { data: profile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single();
-    if (!profile) return res.status(401).json({ error: 'No profile' });
+    const { feature, dateFrom, dateTo, unitId, userId } = req.body;
+    
+    if (!feature || !dateFrom || !dateTo) {
+      return res.status(400).json({ error: 'Missing required fields: feature, dateFrom, dateTo' });
+    }
 
-    // The AI Service orchestrates building context and calling the Provider.
-    // We do NOT pass the raw database to the AI Provider, only sanitized structured context.
+    const aiResponse = await dailyReportIntelligenceService.generate(
+      supabaseAdmin,
+      { feature, dateFrom, dateTo, unitId, userId },
+      user.id,
+      profile.system_role
+    );
     
+    res.json(aiResponse);
+  } catch (err: any) {
+    console.error('[API ai_daily_report_intelligence] Error stack:', err?.stack || err);
+    res.status(err.code === 'AI_CONTEXT_UNAUTHORIZED' ? 403 : 500).json({ error: err.message || 'Internal server error', code: err.code, stack: err?.stack });
+  }
+});
+
+app.post('/api/ai/task/intelligence', authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin;
+    const user = res.locals.user;
+    const profile = res.locals.profile;
+
+    const { feature, dateFrom, dateTo, unitId, userId, status, priority, includeCompleted, language } = req.body;
     
+    if (!feature) {
+      return res.status(400).json({ error: 'Missing required field: feature' });
+    }
+
+    const { taskIntelligenceService } = require('./src/services/ai/taskIntelligence.service');
+
+    const aiResponse = await taskIntelligenceService.generate(
+      supabaseAdmin,
+      { feature, dateFrom, dateTo, unitId, userId, status, priority, includeCompleted, language },
+      user.id,
+      profile.system_role
+    );
+    
+    res.json(aiResponse);
+  } catch (err: any) {
+    console.error('[API ai_task_intelligence] Error stack:', err?.stack || err);
+    res.status(err.code === 'AI_CONTEXT_UNAUTHORIZED' ? 403 : 500).json({ error: err.message || 'Internal server error', code: err.code, stack: err?.stack });
+  }
+});
+
+app.post('/api/ai/summary', authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin;
+    const user = res.locals.user;
+
     const aiResponse = await aiService.generateSummary(supabaseAdmin, {
       userId: user.id,
       featureKey: 'kpi_summary'

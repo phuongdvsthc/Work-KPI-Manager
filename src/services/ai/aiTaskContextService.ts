@@ -46,11 +46,22 @@ export const aiTaskContextService = {
     if (req.dateFrom) query = query.gte('due_date', req.dateFrom);
     if (req.dateTo) query = query.lte('due_date', req.dateTo);
 
-    // Status / priority filters if provided in req? 
-    // Request doesn't have status/priority natively, it's in generic filters. 
-    // B3 requires status filtering if passed, we can check if req.entityIds or something.
-    // Actually the B3 spec says: "Support normalized filters where authorized: ... taskStatus, priority"
-    // We can assume they might be added to AIContextRequest, or we can just leave it out if not explicitly on the interface.
+    // Status / priority filters if provided in req
+    if (req.status && Array.isArray(req.status)) {
+      query = query.in('status', req.status);
+    } else if (req.status && typeof req.status === 'string') {
+      query = query.eq('status', req.status);
+    }
+    
+    if (req.priority && Array.isArray(req.priority)) {
+      query = query.in('priority', req.priority);
+    } else if (req.priority && typeof req.priority === 'string') {
+      query = query.eq('priority', req.priority);
+    }
+    
+    if (req.includeCompleted === false) {
+      query = query.neq('status', 'completed');
+    }
 
     // 2. Apply Scope Authorization (Replicating taskService.getTasks)
     if (scope.scopeType === 'unit_descendants') {

@@ -8,6 +8,7 @@ export type AIContextModule = 'daily_report' | 'task' | 'metric' | 'kpi' | 'dash
 export interface AIContextRequest {
   featureKey: string;
   userId: string;
+  targetUserId?: string;
   periodId?: string;
   unitId?: string;
   dateFrom?: string;
@@ -15,6 +16,9 @@ export interface AIContextRequest {
   entityIds?: string[];
   resultMode?: 'all' | 'live' | 'official';
   modules?: AIContextModule[];
+  status?: string[];
+  priority?: string[];
+  includeCompleted?: boolean;
 }
 
 export interface AIContextData {

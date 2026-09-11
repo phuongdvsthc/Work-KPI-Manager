@@ -11,6 +11,7 @@ import {
 } from '../../../types/manager-report';
 import { ManagerTeamCalendarMatrix } from './ManagerTeamCalendarMatrix';
 import { ManagerDailyOverview } from './ManagerDailyOverview';
+import { ManagerDailyReportIntelligence } from './ManagerDailyReportIntelligence';
 import { SubmittedReportDetailModal } from './SubmittedReportDetailModal';
 import {
   Users,
@@ -553,6 +554,16 @@ export const ManagerTeamDailyReportView: React.FC = () => {
             />
           </div>
 
+          {/* AI Intelligence Summary */}
+
+        <ManagerDailyReportIntelligence
+          selectedDate={selectedDate}
+          currentMonth={currentMonth}
+          viewMode={viewMode}
+          orgUnits={scopeUnits}
+          primaryUnitId={primaryUnit?.id}
+        />
+
           {/* Daily Overview for Selected Date */}
           <ManagerDailyOverview
             selectedDate={selectedDate}
@@ -571,6 +582,18 @@ export const ManagerTeamDailyReportView: React.FC = () => {
           />
         </>
       )}
+
+      {/* AI Intelligence Summary */}
+
+        <ManagerDailyReportIntelligence
+          selectedDate={selectedDate}
+          currentMonth={currentMonth}
+          viewMode={viewMode}
+          orgUnits={scopeUnits}
+          primaryUnitId={primaryUnit?.id}
+          onViewSubmittedReport={handleViewSubmittedReport}
+          onSelectDate={handleSelectDate}
+        />
 
       {/* Daily View: Render Daily Overview prominently */}
       {viewMode === 'daily' && (

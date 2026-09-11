@@ -2,6 +2,9 @@ import { AIContextRequest, AIContextData, AIContextModule } from '../../types/ai
 import { AIContextError } from '../../types/ai_errors';
 import { aiContextScopeService } from './aiContextScopeService';
 import { aiContextSanitizer } from './aiContextSanitizer';
+import { aiDailyReportContextService } from './aiDailyReportContextService';
+import { aiTaskContextService } from './aiTaskContextService';
+import { aiKpiContextService } from './aiKpiContextService';
 
 const AI_CONTEXT_MAX_RECORDS = 50;
 
@@ -62,17 +65,14 @@ export const aiContextService = {
     // This is a skeleton. Actual business module calls will go here in B2-B4.
     
     if (modulesToLoad.includes('daily_report')) {
-      const { aiDailyReportContextService } = require('./aiDailyReportContextService');
       await aiDailyReportContextService.buildDailyReportContext(supabaseAdmin, req, envelope);
     }
 
     if (modulesToLoad.includes('task')) {
-      const { aiTaskContextService } = require('./aiTaskContextService');
       await aiTaskContextService.buildTaskContext(supabaseAdmin, req, envelope);
     }
 
     if (modulesToLoad.includes('kpi')) {
-      const { aiKpiContextService } = require('./aiKpiContextService');
       await aiKpiContextService.buildKpiContext(supabaseAdmin, req, envelope);
     }
     

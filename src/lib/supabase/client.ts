@@ -240,6 +240,33 @@ export function getSupabaseClient(): SupabaseClient<Database> | null {
           apikey: config.anonKey,
           'x-client-info': 'sthc-work-kpi',
         },
+        fetch: async (url, options) => {
+          let res = await fetch(url, options);
+          if (!res.ok) {
+            const clone = res.clone();
+            try {
+              const body = await clone.json();
+              if (body.code === 'PGRST303' || body.message === 'JWT expired') {
+                if (cachedClient) {
+                  const authRes = await cachedClient.auth.refreshSession();
+                  if (authRes?.data?.session) {
+                    const newOptions = { ...options };
+                    const headers = new Headers(options?.headers);
+                    headers.set('Authorization', `Bearer ${authRes.data.session.access_token}`);
+                    newOptions.headers = headers;
+                    res = await fetch(url, newOptions);
+                  } else {
+                    if (typeof window !== 'undefined') {
+                      window.dispatchEvent(new CustomEvent('supabase-jwt-expired'));
+                    }
+                  }
+                }
+              }
+            } catch (e) {}
+          }
+          return res;
+        },
+
       },
     });
     currentConfigKey = newConfigKey;

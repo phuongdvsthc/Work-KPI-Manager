@@ -19,9 +19,12 @@ export const aiDailyReportContextService = {
         report_date,
         user_id,
         organization_unit_id,
-        work_mode,
+        work_status,
         work_summary,
-        note,
+        issues,
+        support_request,
+        off_note,
+        status_note,
         profiles ( full_name ),
         organization_units ( name ),
         daily_report_sources (
@@ -30,10 +33,10 @@ export const aiDailyReportContextService = {
           report_sources ( name ),
           metric_entries (
             id,
-            metric_id,
+            metric_definition_id,
             metric_definitions ( name, code, unit ),
-            value_numeric,
-            value_text
+            value,
+            note
           )
         )
       `)
@@ -43,13 +46,10 @@ export const aiDailyReportContextService = {
 
     if (scope.scopeType === 'self') {
       // Must be self
-      const targetUserId = (req.userId && req.userId === actor.userId) ? actor.userId : actor.userId;
-      query = query.eq('user_id', targetUserId);
+      query = query.eq('user_id', actor.userId);
     } else if (scope.scopeType === 'unit_descendants') {
-      if (req.userId) {
-         // Optionally we should verify if userId is within scope, but for simplicity we rely on unitIds filter
-         // In reality, we'd need to ensure the user is within the unitIds. 
-         query = query.eq('user_id', req.userId);
+      if (req.targetUserId) {
+        query = query.eq('user_id', req.targetUserId);
       }
       if (scope.unitIds.length > 0) {
         query = query.in('organization_unit_id', scope.unitIds);
@@ -57,10 +57,12 @@ export const aiDailyReportContextService = {
         query = query.eq('id', 'forced-empty-id'); // fallback
       }
     } else if (scope.scopeType === 'system' || scope.scopeType === 'read_only_system') {
-      if (req.userId) {
-         query = query.eq('user_id', req.userId);
+      if (req.targetUserId) {
+         query = query.eq('user_id', req.targetUserId);
       }
-      if (req.unitId) {
+      if (scope.unitIds.length > 0) {
+         query = query.in('organization_unit_id', scope.unitIds);
+      } else if (req.unitId) {
          query = query.eq('organization_unit_id', req.unitId);
       }
     }
@@ -78,7 +80,7 @@ export const aiDailyReportContextService = {
     }
     if (error) {
        console.error("AI Daily Report context error:", error);
-       throw new AIContextError('AI_CONTEXT_SOURCE_UNAVAILABLE', 'Failed to fetch daily reports');
+       throw new AIContextError('AI_CONTEXT_SOURCE_UNAVAILABLE', 'Failed to fetch daily reports: ' + (error.message || JSON.stringify(error)));
     }
 
     // Process & Normalize
@@ -105,7 +107,7 @@ export const aiDailyReportContextService = {
       summary.reportCount++;
       uniqueStaff.add(r.user_id);
 
-      const mode = r.work_mode || 'onsite';
+      const mode = r.work_status || r.work_mode || 'onsite';
       if (mode === 'onsite') summary.onsiteCount++;
       else if (mode === 'remote') summary.remoteCount++;
       else if (mode === 'business_trip') summary.businessTripCount++;
@@ -120,10 +122,10 @@ export const aiDailyReportContextService = {
         sourceRefId: s.report_source_id,
         sourceName: s.report_sources?.name,
         metrics: (s.metric_entries || []).map((m: any) => ({
-          metricDefinitionId: m.metric_id,
+          metricDefinitionId: m.metric_definition_id || m.metric_id,
           metricCode: m.metric_definitions?.code,
           metricName: m.metric_definitions?.name,
-          value: m.value_numeric !== null ? m.value_numeric : m.value_text,
+          value: m.value !== undefined && m.value !== null ? m.value : (m.value_numeric !== null ? m.value_numeric : m.value_text),
           unit: m.metric_definitions?.unit
         }))
       }));
@@ -145,7 +147,7 @@ export const aiDailyReportContextService = {
         sourceCount: sources.length,
         sources,
         workSummary: truncateText(r.work_summary),
-        note: truncateText(r.note)
+        note: truncateText(r.support_request || r.issues || r.note)
       };
     });
 

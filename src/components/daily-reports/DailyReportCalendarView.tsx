@@ -1,3 +1,4 @@
+import { StaffDailyReportIntelligence } from './StaffDailyReportIntelligence';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { getSupabaseClient } from '../../lib/supabase';
@@ -252,6 +253,15 @@ export const DailyReportCalendarView: React.FC = () => {
         reports={monthlyReports}
         isLoading={isMonthReportsLoading}
         onSelectMonth={handleSelectMonth}
+        onSelectDate={handleSelectDate}
+      />
+
+      
+      {/* AI Summary Section */}
+      <StaffDailyReportIntelligence
+        selectedDate={selectedDate}
+        currentMonth={currentMonth}
+        userId={user?.id || ''}
         onSelectDate={handleSelectDate}
       />
 

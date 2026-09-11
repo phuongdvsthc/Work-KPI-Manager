@@ -11,6 +11,9 @@ import { TaskDetail } from './TaskDetail';
 import { TaskProgressModal } from './TaskProgressModal';
 import { AnnouncementPublishModal } from './AnnouncementPublishModal';
 import { AnnouncementTrackingModal } from './AnnouncementTrackingModal';
+import { taskIntelligenceService } from '../../services/task-intelligence.service';
+import { TaskIntelligenceResult } from '../../types/task-intelligence';
+import { TaskAIResultPanel } from './intelligence/TaskAIResultPanel';
 import {
   Plus, 
   Search, 
@@ -28,7 +31,8 @@ import {
   AlertTriangle,
   Megaphone,
   Briefcase,
-  CheckCheck
+  CheckCheck,
+  Sparkles
 } from 'lucide-react';
 
 export const TaskList: React.FC = () => {
@@ -43,6 +47,12 @@ export const TaskList: React.FC = () => {
   const [publishTaskId, setPublishTaskId] = useState<string | null>(null);
   const [trackingTaskId, setTrackingTaskId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // AI State
+  const [aiResult, setAiResult] = useState<TaskIntelligenceResult | null>(null);
+  const [isGeneratingAi, setIsGeneratingAi] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiAbortController, setAiAbortController] = useState<AbortController | null>(null);
 
   // Data states
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -143,7 +153,45 @@ export const TaskList: React.FC = () => {
     if (subView === 'list') {
       fetchTasks();
     }
+    // Clear AI result on filter change to avoid stale state
+    setAiResult(null);
+    setAiError(null);
   }, [subView, typeFilter, searchQuery, selectedUnit, selectedStatus, selectedPriority, selectedOwner, dateFrom, dateTo]);
+
+  const handleGenerateAiSummary = async () => {
+    if (aiAbortController) {
+      aiAbortController.abort();
+    }
+
+    const abortController = new AbortController();
+    setAiAbortController(abortController);
+
+    setIsGeneratingAi(true);
+    setAiError(null);
+    setAiResult(null);
+
+    try {
+      const feature = systemRole === 'staff' 
+        ? 'staff_task_summary' 
+        : (selectedUnit === 'all' ? 'manager_team_task_summary' : 'manager_unit_task_summary');
+      const result = await taskIntelligenceService.getTaskIntelligence({
+        feature,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        status: selectedStatus !== 'all' ? selectedStatus : undefined,
+        priority: selectedPriority !== 'all' ? selectedPriority : undefined,
+        unitId: selectedUnit !== 'all' ? selectedUnit : undefined,
+        userId: selectedOwner || undefined,
+      }, abortController.signal);
+      
+      setAiResult(result);
+    } catch (err: any) {
+      if (err.name === 'AbortError') return;
+      setAiError(err.message || 'Đã có lỗi xảy ra.');
+    } finally {
+      setIsGeneratingAi(false);
+    }
+  };
 
   const handleResetFilters = () => {
     setTypeFilter('all');
@@ -233,17 +281,29 @@ export const TaskList: React.FC = () => {
           </p>
         </div>
 
-        {canCreateTask && (
+        <div className="flex items-center gap-2">
           <button
-            id="btn-create-new-task"
             type="button"
-            onClick={() => setSubView('create')}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-bold shadow-xs hover:shadow-md transition-all active:scale-98"
+            onClick={handleGenerateAiSummary}
+            disabled={isGeneratingAi}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs sm:text-sm font-bold shadow-xs transition-all active:scale-98 disabled:opacity-50 disabled:cursor-not-allowed border border-indigo-200"
           >
-            <Plus className="h-4 w-4" />
-            <span>Tạo công việc mới</span>
+            {isGeneratingAi ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            <span>Tóm tắt bằng AI</span>
           </button>
-        )}
+          
+          {canCreateTask && (
+            <button
+              id="btn-create-new-task"
+              type="button"
+              onClick={() => setSubView('create')}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-bold shadow-xs hover:shadow-md transition-all active:scale-98"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Tạo công việc mới</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Summary KPI Cards */}
@@ -435,6 +495,42 @@ export const TaskList: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* AI Intelligence Area */}
+      {aiError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl text-sm flex gap-2 items-start shadow-sm">
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+          <span>{aiError}</span>
+        </div>
+      )}
+      
+      {(aiResult || isGeneratingAi) && (
+        <div className="relative">
+          {isGeneratingAi && !aiResult && (
+            <div className="absolute inset-0 bg-white/50 backdrop-blur-xs z-10 flex flex-col items-center justify-center rounded-xl border border-slate-200/50">
+              <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-3" />
+              <p className="text-sm font-medium text-slate-600">AI đang phân tích công việc...</p>
+            </div>
+          )}
+          {aiResult && (
+            <div className={isGeneratingAi ? 'opacity-50 pointer-events-none' : ''}>
+              <TaskAIResultPanel 
+                result={aiResult}
+                role={systemRole === 'staff' ? 'staff' : 'manager'}
+                unitName={selectedUnit === 'all' ? 'Toàn phạm vi quản lý' : units.find(u => u.id === selectedUnit)?.name || 'Đơn vị'}
+                onRegenerate={handleGenerateAiSummary}
+                isRegenerating={isGeneratingAi}
+                onDrillDownEvidence={(evidence) => {
+                  if (evidence.taskId) {
+                    setSelectedTaskId(evidence.taskId);
+                    setSubView('detail');
+                  }
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Task Table Card */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">

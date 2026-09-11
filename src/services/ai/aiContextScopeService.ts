@@ -1,6 +1,7 @@
 import { AIContextError } from '../../types/ai_errors';
 import { getSupabaseClient } from '../supabaseClient';
 import { SystemRole } from '../../types/database';
+import { resolveManagerScopeUnits } from '../managerScopeService';
 
 export interface AIContextActor {
   userId: string;
@@ -51,18 +52,40 @@ export const aiContextScopeService = {
       systemWide: false
     };
 
+    // Helper to get active descendants of a unit
+    const getUnitAndDescendants = async (rootUnitId: string, allowedUnitIds?: string[]): Promise<string[]> => {
+      const { data: allUnits } = await supabaseAdmin
+        .from('organization_units')
+        .select('id, parent_id, is_active');
+      const activeUnits = (allUnits || []).filter((u: any) => u.is_active !== false);
+      const subUnitIds = new Set<string>([rootUnitId]);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const u of activeUnits) {
+          if (u.parent_id && subUnitIds.has(u.parent_id) && !subUnitIds.has(u.id)) {
+            if (!allowedUnitIds || allowedUnitIds.includes(u.id)) {
+              subUnitIds.add(u.id);
+              added = true;
+            }
+          }
+        }
+      }
+      return Array.from(subUnitIds);
+    };
+
     // 2. Resolve Scope by Role
     if (sysRole === 'admin') {
       scope.scopeType = 'system';
       scope.systemWide = true;
       if (requestedUnitId) {
-        scope.unitIds = [requestedUnitId];
+        scope.unitIds = await getUnitAndDescendants(requestedUnitId);
       }
     } else if (sysRole === 'executive') {
       scope.scopeType = 'read_only_system';
       scope.systemWide = true;
       if (requestedUnitId) {
-        scope.unitIds = [requestedUnitId];
+        scope.unitIds = await getUnitAndDescendants(requestedUnitId);
       }
     } else if (sysRole === 'manager') {
       scope.scopeType = 'unit_descendants';
@@ -70,12 +93,6 @@ export const aiContextScopeService = {
         throw new AIContextError('AI_CONTEXT_INVALID_SCOPE', 'Manager must have a primary unit.');
       }
       
-      // Fetch descendants using RPC if requestedUnitId is empty, otherwise check if requestedUnitId is within descendants
-      // Delegate to authoritative backend helpers or REST
-      // The easiest way to bypass repeating the unit logic is to call a local API or just implement the tree builder.
-      // But we have access to supabaseAdmin. Let's do a fast query for all units and build the tree.
-      // Delegate to authoritative backend helpers
-      const { resolveManagerScopeUnits } = require('../managerScopeService');
       const scopeData = await resolveManagerScopeUnits(supabaseAdmin, userId, sysRole);
       
       let targetUnitIds: string[] = [];
@@ -89,7 +106,7 @@ export const aiContextScopeService = {
         if (!targetUnitIds.includes(requestedUnitId)) {
           throw new AIContextError('AI_CONTEXT_UNAUTHORIZED', 'Requested unit is outside manager scope.');
         }
-        scope.unitIds = [requestedUnitId];
+        scope.unitIds = await getUnitAndDescendants(requestedUnitId, targetUnitIds);
       } else {
         scope.unitIds = targetUnitIds;
       }

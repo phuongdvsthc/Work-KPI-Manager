@@ -168,6 +168,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       checkAndInitAuth();
     };
 
+    
+    const handleJwtExpired = async () => {
+      console.warn('JWT Expired, forcing sign out...');
+      await authService.signOut();
+      setUser(null);
+      setProfile(null);
+      setPrimaryUnit(null);
+      setAllUnits([]);
+      setSystemRole(null);
+      setError('Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.');
+      window.location.hash = '#/login';
+    };
+    window.addEventListener('supabase-jwt-expired', handleJwtExpired);
+
     window.addEventListener('supabase-config-changed', handleConfigChanged);
 
     return () => {
@@ -176,6 +190,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         unsubscribe();
       }
       window.removeEventListener('supabase-config-changed', handleConfigChanged);
+      window.removeEventListener('supabase-jwt-expired', handleJwtExpired);
     };
   }, [loadUserData]);
 
