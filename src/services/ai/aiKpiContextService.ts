@@ -57,15 +57,15 @@ export const aiKpiContextService = {
         query = query.eq('id', 'forced-empty-id'); // fallback
       }
       
-      if (req.userId) {
-         query = query.eq('assignee_user_id', req.userId);
+      if (req.targetUserId) {
+         query = query.eq('assignee_user_id', req.targetUserId);
       }
     } else if (scope.scopeType === 'system' || scope.scopeType === 'read_only_system') {
        if (req.unitId) {
          query = query.or(`assignee_unit_id_snapshot.eq.${req.unitId},assignee_organization_unit_id.eq.${req.unitId}`);
        }
-       if (req.userId) {
-         query = query.eq('assignee_user_id', req.userId);
+       if (req.targetUserId) {
+         query = query.eq('assignee_user_id', req.targetUserId);
        }
     }
 
@@ -154,32 +154,64 @@ export const aiKpiContextService = {
         let rawScore = null;
         let weightedScore = null;
         let scoringStatus = 'not_scored';
+        let scoringReason: string | null = null;
+        let attainmentState = 'not_scored';
+        let gap: number | null = null;
+
+        const direction = it.direction || it.definition?.direction || it.definition_snapshot?.direction || 'higher_is_better';
+        const scoringMethod = it.scoring_method || it.definition?.default_scoring_method || 'linear';
+        const measurementType = it.measurement_type || it.definition?.measurement_type || 'number';
 
         if (isLocked) {
           actual = it.final_actual_value ?? null;
+          rawAchievementPercent = it.final_achievement_percent ?? null;
           achievementPercent = it.final_achievement_percent ?? null;
           rawScore = it.final_raw_score ?? null;
           weightedScore = it.final_weighted_score ?? null;
-          if (weightedScore !== null) scoringStatus = 'scored';
+          if (weightedScore !== null) {
+            scoringStatus = 'scored';
+            if (achievementPercent !== null) {
+              attainmentState = Number(achievementPercent) >= 100 ? (Number(achievementPercent) > 100 ? 'exceeded' : 'achieved') : 'under_target';
+              if (measurementType === 'boolean') {
+                gap = null;
+              } else if (direction === 'lower_is_better') {
+                gap = (actual !== null && target !== null && Number(actual) > Number(target)) ? Number(actual) - Number(target) : 0;
+              } else {
+                gap = (actual !== null && target !== null && Number(target) > Number(actual)) ? Number(target) - Number(actual) : 0;
+              }
+            }
+          } else {
+            scoringStatus = it.scoring_status || 'not_scored';
+            scoringReason = it.status_reason || (actual === null ? 'actual_not_available' : null);
+            attainmentState = scoringStatus;
+          }
         } else {
           actual = it.resolved_actual ?? null;
           rawAchievementPercent = it.resolved_ach ?? null;
           rawScore = it.resolved_raw ?? null;
           weightedScore = it.resolved_weighted ?? null;
-          scoringStatus = it.resolved_is_scored ? 'scored' : 'not_scored';
+          scoringStatus = it.scoring_status || (it.resolved_is_scored ? 'scored' : 'not_scored');
+          scoringReason = it.status_reason || (scoringStatus === 'not_scored' ? 'actual_not_available' : null);
           if (it.resolved_ach !== undefined && it.cap_percent !== undefined) {
              achievementPercent = Math.min(it.resolved_ach, Number(it.cap_percent));
           } else {
              achievementPercent = rawAchievementPercent;
           }
+          attainmentState = it.attainment_state || (it.resolved_is_scored ? (Number(achievementPercent) >= 100 ? 'achieved' : 'under_target') : scoringStatus);
+          gap = it.resolved_gap !== undefined ? it.resolved_gap : null;
         }
 
         return {
-          assignmentItemId: it.id || it.assignment_item_id,
+          id: it.assignment_item_id || it.id,
+          assignmentItemId: it.assignment_item_id || it.id,
+          reviewItemId: it.id,
           kpiDefinitionId: it.kpi_definition_id,
           kpiKey: it.definition?.code || it.kpi_snapshot?.code,
           kpiName: it.definition?.name || it.kpi_snapshot?.name || it.kpi_name_snapshot,
           objectiveId: it.definition?.objective_id,
+          direction,
+          scoringMethod,
+          measurementType,
           weight,
           target,
           actual,
@@ -188,12 +220,16 @@ export const aiKpiContextService = {
           rawScore,
           weightedScore,
           scoringStatus,
+          scoringReason,
+          attainmentState,
+          gap,
           resultMode: isLocked ? 'official' : 'live'
         };
       });
 
       return {
         assignmentId: a.id,
+        id: a.id,
         periodId: a.period_id,
         periodName: a.period?.name,
         assigneeType: a.assignee_type,
@@ -208,7 +244,7 @@ export const aiKpiContextService = {
         scoredWeight: scoreMap?.scored_weight || 0,
         unscoredWeight: 100 - (scoreMap?.scored_weight || 0),
         totalScore: scoreMap?.total_score ?? null,
-        items: resolvedItems
+        items: normalizedItems
       };
     });
 

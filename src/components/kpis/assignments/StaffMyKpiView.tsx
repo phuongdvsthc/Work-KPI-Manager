@@ -13,6 +13,7 @@ import {
   Calculator,
   Lock
 } from 'lucide-react';
+import { StaffKpiAiSummary } from "./StaffKpiAiSummary";
 import { useAuth } from '../../../context/AuthContext';
 import { kpiAssignmentService } from '../../../services/kpi-assignment.service';
 import { kpiActualService, KpiActualResolverResult } from '../../../services/kpiActualService';
@@ -176,6 +177,15 @@ export const StaffMyKpiView: React.FC = () => {
         </div>
       </div>
 
+      <StaffKpiAiSummary
+        assignments={assignments}
+        onDrillDownAssignment={(assignmentId) => {
+          if (expandedId !== assignmentId) {
+            setExpandedId(assignmentId);
+            loadItemsForAssignment(assignmentId);
+          }
+        }}
+      />
       {/* Error state */}
       {error && (
         <div className="flex items-start gap-3 rounded-xl bg-red-50 p-4 text-red-800 text-sm">

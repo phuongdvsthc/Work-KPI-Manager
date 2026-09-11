@@ -63,12 +63,23 @@ export const aiPromptRegistryService = {
            prompt_key: promptKey,
            enabled: true
          };
+         let defaultUserPrompt = 'Hãy phân tích tình trạng KPI dựa trên context được cung cấp: {{kpi_context}}';
+         if (promptKey.startsWith('daily_report.')) {
+           defaultUserPrompt = 'Hãy tóm tắt báo cáo công việc từ ngày {{dateFrom}} đến {{dateTo}}. Số lượng báo cáo: {{reportCount}}.';
+         } else if (promptKey.startsWith('task.')) {
+           defaultUserPrompt = 'Hãy phân tích danh sách công việc được cung cấp trong context.';
+         }
+
+         const verNum = parseFloat(staticDef.version || '1.0') || 1;
+         const verId = 'static-v' + (staticDef.version ? staticDef.version.replace('.', '_') : '1_0') + '-' + promptKey;
+
          activeVersion = {
-           id: 'static-v1-' + promptKey,
-           version_number: 1,
+           id: verId,
+           version_number: verNum,
            output_mode: 'structured',
            system_prompt: staticDef.systemInstruction,
-           user_prompt_template: 'Hãy tóm tắt báo cáo công việc từ ngày {{dateFrom}} đến {{dateTo}}. Số lượng báo cáo: {{reportCount}}.',
+           user_prompt_template: defaultUserPrompt,
+           responseSchema: staticDef.expectedSchema,
            response_schema: staticDef.expectedSchema
          };
       }
@@ -125,5 +136,51 @@ export const aiPromptRegistryService = {
          } as any;
       }
       return null;
+  },
+
+  async getVersion(supabaseAdmin: any, promptKey: string, versionNumberOrId: string | number): Promise<any | null> {
+    const vStr = String(versionNumberOrId);
+    try {
+      const { data: defData } = await supabaseAdmin
+        .from('ai_prompt_definitions')
+        .select('id')
+        .eq('prompt_key', promptKey)
+        .single();
+      if (defData) {
+        let q = supabaseAdmin.from('ai_prompt_versions').select('*').eq('prompt_definition_id', defData.id);
+        if (/^[0-9a-f-]{36}$/i.test(vStr) || vStr.startsWith('static-')) {
+          q = q.eq('id', vStr);
+        } else {
+          q = q.eq('version_number', parseFloat(vStr));
+        }
+        const { data: vData } = await q.maybeSingle();
+        if (vData) return vData;
+      }
+    } catch(e) {}
+
+    const exactHistoricalKey = `${promptKey}@${vStr}`;
+    const staticDef = aiPromptRegistry[exactHistoricalKey] || (aiPromptRegistry[promptKey]?.version === vStr ? aiPromptRegistry[promptKey] : null);
+    if (staticDef) {
+      const defaultUserPrompt = 'Hãy phân tích tình trạng KPI dựa trên context được cung cấp: {{kpi_context}}';
+      return {
+        id: 'static-v' + (staticDef.version ? staticDef.version.replace('.', '_') : '1_0') + '-' + promptKey,
+        prompt_definition_id: 'static-' + promptKey,
+        version_number: parseFloat(staticDef.version || vStr) || 1,
+        status: staticDef.version === '1.0' ? 'retired' : 'active',
+        system_prompt: staticDef.systemInstruction,
+        user_prompt_template: defaultUserPrompt,
+        output_mode: 'structured',
+        response_schema: staticDef.expectedSchema,
+        default_temperature: 0.2,
+        default_max_output_tokens: 4096,
+        provider_config: null,
+        notes: null,
+        created_at: new Date().toISOString(),
+        created_by: null,
+        activated_at: new Date().toISOString(),
+        activated_by: null
+      };
+    }
+    return null;
   }
 };

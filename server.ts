@@ -1,3 +1,4 @@
+import { kpiIntelligenceService } from './src/services/ai/kpiIntelligence.service';
 import { dailyReportIntelligenceService } from './src/services/ai/dailyReportIntelligence.service';
 import { resolveManagerScopeUnits } from './src/services/managerScopeService';
 import { applyAdvancedFiltersAndBatchResolve, resolveLiveScoresBatch, resolveOfficialScoresBatch } from './src/services/kpiDashboardResolver';
@@ -7899,6 +7900,35 @@ app.post('/api/ai/daily-report/intelligence', authenticateUser, async (req: Requ
   } catch (err: any) {
     console.error('[API ai_daily_report_intelligence] Error stack:', err?.stack || err);
     res.status(err.code === 'AI_CONTEXT_UNAUTHORIZED' ? 403 : 500).json({ error: err.message || 'Internal server error', code: err.code, stack: err?.stack });
+  }
+});
+
+app.post('/api/ai/kpi/intelligence', authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin;
+    const user = res.locals.user;
+    const profile = res.locals.profile;
+    const role = profile?.system_role || user?.role || 'staff';
+    const reqBody = req.body;
+    const result = await kpiIntelligenceService.generate(supabaseAdmin, reqBody, user.id, role);
+    res.json(result);
+  } catch (err: any) {
+    console.error('KPI AI Error:', err);
+    let status = 500;
+    if (err.code === 'AI_DISABLED' || err.code === 'AI_NOT_CONFIGURED' || err.code === 'PROVIDER_UNAVAILABLE') {
+      status = 503;
+    } else if (err.code === 'AI_CONTEXT_UNAUTHORIZED') {
+      status = 403;
+    } else if (err.code === 'AI_CONTEXT_INVALID_SCOPE') {
+      status = 400;
+    } else if (err.code === 'RATE_LIMITED') {
+      status = 429;
+    } else if (err.code === 'TIMEOUT') {
+      status = 504;
+    } else if (err.code === 'INVALID_RESPONSE') {
+      status = 502;
+    }
+    res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
   }
 });
 

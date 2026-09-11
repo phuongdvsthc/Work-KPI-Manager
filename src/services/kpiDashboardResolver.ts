@@ -57,18 +57,78 @@ export async function resolveLiveScoresBatch(
       const weight = Number(it.weight) || 0;
       tw += weight;
 
+      const direction = it.direction || it.definition?.direction || 'higher_is_better';
+      const method = it.scoring_method || it.definition?.default_scoring_method || 'linear';
+      const measurementType = it.measurement_type || it.definition?.measurement_type || 'number';
+      it.direction = direction;
+      it.scoring_method = method;
+      it.measurement_type = measurementType;
+
+      const rawTargetVal = it.target_config?.target_value;
+      const isTargetConfigInvalid = it.target_config?.status === 'invalid_target' ||
+        it.config?.status === 'invalid_target' ||
+        (measurementType !== 'boolean' && (rawTargetVal === undefined || rawTargetVal === null || rawTargetVal === '' || isNaN(Number(rawTargetVal))));
+      const scoringConfig = it.scoring_config || (it.bands_config ? { bands: it.bands_config } : null);
+      const isScoringConfigInvalid = it.scoring_config?.status === 'invalid_config' || 
+        it.config?.status === 'invalid_config' ||
+        (method === 'bands' && (!Array.isArray(scoringConfig?.bands) || scoringConfig.bands.length === 0));
+      const isMethodUnsupported = method === 'unsupported_method' || it.scoring_config?.method === 'unsupported_method';
+
+      if (isTargetConfigInvalid) {
+        it.resolved_is_scored = false;
+        it.scoring_status = 'invalid_target';
+        it.status_reason = 'invalid_target';
+        it.attainment_state = 'invalid_target';
+        it.resolved_gap = null;
+        it.resolved_ach = null;
+        it.resolved_raw = null;
+        it.resolved_weighted = null;
+        it.resolved_actual = actualsMap.get(it.id) ?? null;
+        hasMissing = true;
+        continue;
+      }
+
+      if (isScoringConfigInvalid) {
+        it.resolved_is_scored = false;
+        it.scoring_status = 'invalid_config';
+        it.status_reason = 'invalid_config';
+        it.attainment_state = 'invalid_config';
+        it.resolved_gap = null;
+        it.resolved_ach = null;
+        it.resolved_raw = null;
+        it.resolved_weighted = null;
+        it.resolved_actual = actualsMap.get(it.id) ?? null;
+        hasMissing = true;
+        continue;
+      }
+
+      if (isMethodUnsupported) {
+        it.resolved_is_scored = false;
+        it.scoring_status = 'unsupported_method';
+        it.status_reason = 'unsupported_method';
+        it.attainment_state = 'unsupported_method';
+        it.resolved_gap = null;
+        it.resolved_ach = null;
+        it.resolved_raw = null;
+        it.resolved_weighted = null;
+        it.resolved_actual = actualsMap.get(it.id) ?? null;
+        hasMissing = true;
+        continue;
+      }
+
       if (actualsMap.has(it.id)) {
         sw += weight;
-        const target = Number(it.target_config?.target_value) || 1;
+        const target = Number(rawTargetVal);
         const actual = actualsMap.get(it.id)!;
-        const direction = it.definition?.direction || 'higher_is_better';
         let rawAch = 0;
-        if (direction === 'lower_is_better') {
+        if (measurementType === 'boolean') {
+          rawAch = (actual === 1 || (actual as any) === true || String(actual) === '1' || String(actual).toLowerCase() === 'true') ? 100 : 0;
+        } else if (direction === 'lower_is_better') {
           rawAch = actual === 0 ? 100 : (target / actual) * 100;
         } else if (direction === 'exact_target') {
           rawAch = actual === target ? 100 : 0;
         } else {
-          rawAch = (actual / target) * 100;
+          rawAch = (actual / (target === 0 ? 1 : target)) * 100;
         }
 
         let ach = rawAch;
@@ -78,7 +138,6 @@ export async function resolveLiveScoresBatch(
 
         let rawScore = ach;
         const scoringConfig = it.scoring_config;
-        const method = it.definition?.default_scoring_method || 'linear';
         if (method === 'bands' && Array.isArray(scoringConfig?.bands)) {
           let matchedBand: any = null;
           for (const b of scoringConfig.bands) {
@@ -99,8 +158,54 @@ export async function resolveLiveScoresBatch(
         it.resolved_weighted = weightedScore;
         it.resolved_actual = actual;
         it.resolved_is_scored = true;
+        it.scoring_status = 'scored';
+        it.status_reason = null;
+
+        // Authoritative attainment state and gap
+        let attainmentState: 'achieved' | 'exceeded' | 'under_target' = 'under_target';
+        let gap: number | null = null;
+
+        if (measurementType === 'boolean') {
+          attainmentState = rawScore >= 100 ? 'achieved' : 'under_target';
+          gap = null;
+        } else if (direction === 'lower_is_better') {
+          if (actual <= target) {
+            attainmentState = actual < target ? 'exceeded' : 'achieved';
+            gap = 0;
+          } else {
+            attainmentState = 'under_target';
+            gap = actual - target;
+          }
+        } else if (direction === 'exact_target') {
+          if (actual === target) {
+            attainmentState = 'achieved';
+            gap = 0;
+          } else {
+            attainmentState = 'under_target';
+            gap = Math.abs(actual - target);
+          }
+        } else {
+          if (actual >= target) {
+            attainmentState = actual > target ? 'exceeded' : 'achieved';
+            gap = 0;
+          } else {
+            attainmentState = 'under_target';
+            gap = target - actual;
+          }
+        }
+
+        it.attainment_state = attainmentState;
+        it.resolved_gap = gap;
       } else {
         it.resolved_is_scored = false;
+        it.scoring_status = 'not_scored';
+        it.status_reason = 'actual_not_available';
+        it.attainment_state = 'not_scored';
+        it.resolved_actual = null;
+        it.resolved_gap = null;
+        it.resolved_ach = null;
+        it.resolved_raw = null;
+        it.resolved_weighted = null;
         hasMissing = true;
       }
     }
@@ -223,7 +328,7 @@ export async function resolveOfficialScoresBatch(
   if (reviewIds.length > 0) {
     const { data: ir } = await supabaseAdmin
       .from('kpi_assignment_item_reviews')
-      .select('review_id, final_weighted_score, final_raw_score')
+      .select('id, review_id, assignment_item_id, final_actual_value, final_achievement_percent, final_weighted_score, final_raw_score, final_comments')
       .in('review_id', reviewIds);
     itemReviews = ir || [];
   }

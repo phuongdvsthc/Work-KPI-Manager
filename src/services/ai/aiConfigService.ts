@@ -52,7 +52,7 @@ export const aiConfigService = {
       provider: process.env.AI_PROVIDER || 'gemini',
       model: process.env.AI_MODEL || 'gemini-3.8-flash',
       apiKey: process.env.AI_API_KEY || process.env.GEMINI_API_KEY || '',
-      enabled: process.env.AI_ENABLED === 'true' || process.env.AI_ENABLED === '1'
+      enabled: process.env.AI_ENABLED === 'true' || process.env.AI_ENABLED === '1' || (process.env.AI_ENABLED !== 'false' && !!(process.env.AI_API_KEY || process.env.GEMINI_API_KEY))
     };
 
     const resolvedConfig: AIProviderConfig = {

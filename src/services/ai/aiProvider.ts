@@ -28,9 +28,9 @@ export class GeminiProvider implements AIProvider {
 
   constructor(private config: AIProviderConfig) {
     this.ai = new GoogleGenAI({ apiKey: config.apiKey });
-    let model = config.model || 'gemini-3.1-flash-lite';
-    if (model.includes('1.5') || model.includes('2.0') || model.includes('2.5') || model.includes('3.8')) {
-      model = 'gemini-3.1-flash-lite';
+    let model = config.model || 'gemini-3.6-flash';
+    if (model.includes('1.5') || model.includes('2.0') || model.includes('2.5') || model.includes('3.8') || model.includes('3.1')) {
+      model = 'gemini-3.6-flash';
     }
     this.model = model;
   }
@@ -51,8 +51,8 @@ export class GeminiProvider implements AIProvider {
             waitTime = Math.min(Math.ceil(parseFloat(match[1]) * 1000) + 1000, 25000);
           }
           console.warn(`[GeminiProvider] Transient error on attempt ${attempt}/${retries}. Retrying in ${waitTime}ms...`);
-          if (this.model !== 'gemini-3.1-flash-lite') {
-            this.model = 'gemini-3.1-flash-lite';
+          if (this.model !== 'gemini-3.6-flash') {
+            this.model = 'gemini-3.6-flash';
           }
           await new Promise(r => setTimeout(r, waitTime));
           continue;
@@ -92,9 +92,8 @@ export class GeminiProvider implements AIProvider {
     const configObj: any = {
       systemInstruction: prompt,
       responseMimeType: 'application/json',
-      temperature: options?.temperature ?? 0.1,
-      maxOutputTokens: options?.maxTokens ?? 2048,
-      thinkingConfig: { thinkingLevel: 'minimal' }
+      temperature: options?.temperature ?? 0.2,
+      maxOutputTokens: options?.maxTokens ?? 4096
     };
 
     if (schema && Object.keys(schema).length > 0) {
