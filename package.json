@@ -11,7 +11,11 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "self-test:v0.7-a1": "tsx test_v0.7-a1.ts",
-    "self-test:v0.7-a2": "tsx test_v0.7-a2.ts"
+    "self-test:v0.7-a2": "tsx test_v0.7-a2.ts",
+    "self-test:v0.7-a3": "tsx test_v0.7-a3.ts",
+    "self-test:v0.7-a4-1": "tsx test_v0.7-a4-1.ts",
+    "self-test:v0.7-a4-2": "tsx test_v0.7-a4-2.ts",
+    "self-test:v0.7-a4-3": "tsx test_v0.7-a4-3.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
