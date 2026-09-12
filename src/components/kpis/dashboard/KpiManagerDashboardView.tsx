@@ -13,6 +13,7 @@ import { KpiPortfolioTable } from "./KpiPortfolioTable";
 import { KpiStatusChart } from "./charts/KpiStatusChart";
 import { KpiUnitScoreChart } from "./charts/KpiUnitScoreChart";
 import { KpiPortfolioResultChart } from "./charts/KpiPortfolioResultChart";
+import { ManagerKpiAiSummary } from './ManagerKpiAiSummary';
 
 interface KpiManagerDashboardViewProps {
   onNavigateToAssignments?: () => void;
@@ -616,6 +617,16 @@ export const KpiManagerDashboardView: React.FC<KpiManagerDashboardViewProps> = (
               )}
             </div>
           </div>
+
+          <ManagerKpiAiSummary
+            filters={filters}
+            unitName={scopeUnits.find(u => u.id === filters.unitId)?.name}
+            onDrillDownEvidence={(evidence) => {
+              if (evidence.assignmentId) {
+                window.location.hash = `#/kpis/dashboard/assignment/${evidence.assignmentId}`;
+              }
+            }}
+          />
 
           {/* SECTION 3: Institution Summary */}
           <div
