@@ -13,10 +13,12 @@ export interface AIContextScope {
   scopeType: 'self' | 'unit_descendants' | 'system' | 'read_only_system';
   unitIds: string[];
   systemWide: boolean;
+  targetUnitId?: string;
+  targetUnitName?: string;
 }
 
 export const aiContextScopeService = {
-  async resolve(supabaseAdmin: any, userId: string, requestedUnitId?: string): Promise<{ actor: AIContextActor, scope: AIContextScope }> {
+  async resolve(supabaseAdmin: any, userId: string, requestedUnitId?: string, scopeMode: 'unit_only' | 'unit_with_descendants' = 'unit_with_descendants'): Promise<{ actor: AIContextActor, scope: AIContextScope }> {
     // 1. Resolve User Profile & Role
     const { data: profile, error } = await supabaseAdmin
       .from('profiles')
@@ -46,10 +48,21 @@ export const aiContextScopeService = {
       primaryUnitId
     };
 
+
+    let targetUnitName: string | undefined = undefined;
+    if (requestedUnitId) {
+        const { data: requestedUnit } = await supabaseAdmin.from('organization_units').select('name').eq('id', requestedUnitId).single();
+        if (requestedUnit) {
+            targetUnitName = requestedUnit.name;
+        }
+    }
+
     let scope: AIContextScope = {
       scopeType: 'self',
       unitIds: [],
-      systemWide: false
+      systemWide: false,
+      targetUnitId: requestedUnitId,
+      targetUnitName
     };
 
     // Helper to get active descendants of a unit
@@ -79,13 +92,13 @@ export const aiContextScopeService = {
       scope.scopeType = 'system';
       scope.systemWide = true;
       if (requestedUnitId) {
-        scope.unitIds = await getUnitAndDescendants(requestedUnitId);
+        scope.unitIds = scopeMode === 'unit_only' ? [requestedUnitId] : await getUnitAndDescendants(requestedUnitId);
       }
     } else if (sysRole === 'executive') {
       scope.scopeType = 'read_only_system';
       scope.systemWide = true;
       if (requestedUnitId) {
-        scope.unitIds = await getUnitAndDescendants(requestedUnitId);
+        scope.unitIds = scopeMode === 'unit_only' ? [requestedUnitId] : await getUnitAndDescendants(requestedUnitId);
       }
     } else if (sysRole === 'manager') {
       scope.scopeType = 'unit_descendants';
@@ -106,7 +119,7 @@ export const aiContextScopeService = {
         if (!targetUnitIds.includes(requestedUnitId)) {
           throw new AIContextError('AI_CONTEXT_UNAUTHORIZED', 'Requested unit is outside manager scope.');
         }
-        scope.unitIds = await getUnitAndDescendants(requestedUnitId, targetUnitIds);
+        scope.unitIds = scopeMode === 'unit_only' ? [requestedUnitId] : await getUnitAndDescendants(requestedUnitId, targetUnitIds);
       } else {
         scope.unitIds = targetUnitIds;
       }

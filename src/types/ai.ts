@@ -11,6 +11,7 @@ export interface AIContextRequest {
   targetUserId?: string;
   periodId?: string;
   unitId?: string;
+  scopeMode?: 'unit_only' | 'unit_with_descendants';
   dateFrom?: string;
   dateTo?: string;
   entityIds?: string[];
@@ -39,6 +40,8 @@ export interface AIContextData {
     scopeType: string;
     unitIds: string[];
     systemWide: boolean;
+    targetUnitId?: string;
+    targetUnitName?: string;
   };
   data: {
     dailyReports?: any;
@@ -46,11 +49,17 @@ export interface AIContextData {
     metrics?: any;
     kpis?: any;
     dashboard?: any;
+    deterministicIssues?: AICrossModuleIssue[];
+    associatedIssueGroups?: AICrossModuleGroup[];
+    generatedFollowUps?: AICrossModuleFollowUp[];
   };
   metadata: {
     recordCounts: Record<string, number>;
     truncated: boolean;
     warnings: string[];
+    issueCount?: number;
+    groupCount?: number;
+    followUpCount?: number;
   };
 };
 
@@ -71,6 +80,68 @@ export interface ProviderUsageMetadata {
   output_tokens?: number;
   total_tokens?: number;
   finish_reason?: string;
+}
+
+
+export type AICrossModuleIssueCategory = 
+  | 'operational_blocker'
+  | 'overdue_work'
+  | 'unresolved_work'
+  | 'kpi_gap'
+  | 'missing_data'
+  | 'unscored_data'
+  | 'partial_result'
+  | 'configuration_issue'
+  | 'review_attention';
+
+export interface AICrossModuleIssue {
+  issueId: string;
+  category: AICrossModuleIssueCategory;
+  module: AIContextModule;
+  title: string;
+  factualState: string;
+  evidence: string[]; // array of ids
+  scope: {
+    unitId?: string;
+    userId?: string;
+  };
+  period?: {
+    periodId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  };
+  scoreMode?: 'live' | 'official';
+  sourceAttribution?: string;
+  followUpEligible?: boolean;
+}
+
+
+export type AICrossModuleRelationshipType = 'same_business_item' | 'explicit_reference' | 'related_context' | 'co_occurrence' | 'single_issue';
+
+export interface AICrossModuleGroup {
+  groupId: string;
+  title: string;
+  categories: AICrossModuleIssueCategory[];
+  modules: AIContextModule[];
+  issueIds: string[];
+  evidence: string[];
+  relationshipType: AICrossModuleRelationshipType;
+  explanation: string;
+}
+
+
+export type AIFollowUpType = 'explicit' | 'suggested';
+export type AIFollowUpCategory = 'review_source' | 'verify_data' | 'monitor_progress' | 'review_task' | 'review_kpi' | 'cross_module_check';
+
+export interface AICrossModuleFollowUp {
+  followUpId: string;
+  text: string;
+  type: AIFollowUpType;
+  category: AIFollowUpCategory;
+  issueIds: string[];
+  evidence: string[];
+  moduleTags: AIContextModule[];
+  scopeLabel?: string;
 }
 
 export interface AIPromptDefinition {

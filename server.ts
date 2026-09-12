@@ -7960,20 +7960,93 @@ app.post('/api/ai/task/intelligence', authenticateUser, async (req: Request, res
   }
 });
 
-app.post('/api/ai/summary', authenticateUser, async (req: Request, res: Response) => {
+app.post('/api/ai/executive/overview', authenticateUser, async (req: Request, res: Response) => {
   try {
     const supabaseAdmin = res.locals.supabaseAdmin;
     const user = res.locals.user;
+    const profile = res.locals.profile;
 
-    const aiResponse = await aiService.generateSummary(supabaseAdmin, {
+    const role = profile?.system_role || user?.role;
+    if (role !== 'executive' && role !== 'admin' && role !== 'manager') {
+      return res.status(403).json({ error: 'Unauthorized role for executive overview', code: 'AI_CONTEXT_UNAUTHORIZED' });
+    }
+
+    const { dateFrom, dateTo, kpiPeriodId, unitId, featureKey } = req.body;
+    const { executiveIntelligenceService } = require('./src/services/ai/executiveIntelligence.service');
+
+    const resolvedFeatureKey = featureKey || (unitId ? 'executive.unit_summary' : 'executive.overview');
+
+    const result = await executiveIntelligenceService.generateSummary(supabaseAdmin, {
       userId: user.id,
-      featureKey: 'kpi_summary'
+      unitId,
+      dateFrom,
+      dateTo,
+      kpiPeriodId,
+      featureKey: resolvedFeatureKey
     });
 
-    res.json(aiResponse);
+    res.json(result);
   } catch (err: any) {
-    console.error('[API ai_summary] Error:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    console.error('[API executive_overview] Error:', err);
+    let status = 500;
+    if (err.code === 'AI_DISABLED' || err.code === 'AI_NOT_CONFIGURED' || err.code === 'PROVIDER_UNAVAILABLE') {
+      status = 503;
+    } else if (err.code === 'AI_CONTEXT_UNAUTHORIZED') {
+      status = 403;
+    } else if (err.code === 'AI_CONTEXT_INVALID_SCOPE') {
+      status = 400;
+    } else if (err.code === 'RATE_LIMITED') {
+      status = 429;
+    } else if (err.code === 'TIMEOUT') {
+      status = 504;
+    } else if (err.code === 'INVALID_RESPONSE') {
+      status = 502;
+    }
+    res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
+  }
+});
+
+app.post('/api/ai/executive/unit-summary', authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin;
+    const user = res.locals.user;
+    const profile = res.locals.profile;
+
+    const role = profile?.system_role || user?.role;
+    if (role !== 'executive' && role !== 'admin' && role !== 'manager') {
+      return res.status(403).json({ error: 'Unauthorized role for executive unit summary', code: 'AI_CONTEXT_UNAUTHORIZED' });
+    }
+
+    const { dateFrom, dateTo, kpiPeriodId, unitId, featureKey } = req.body;
+    const { executiveIntelligenceService } = require('./src/services/ai/executiveIntelligence.service');
+
+    const result = await executiveIntelligenceService.generateSummary(supabaseAdmin, {
+      userId: user.id,
+      unitId,
+      dateFrom,
+      dateTo,
+      kpiPeriodId,
+      featureKey: featureKey || 'executive.unit_summary'
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('[API executive_unit_summary] Error:', err);
+    let status = 500;
+    if (err.code === 'AI_DISABLED' || err.code === 'AI_NOT_CONFIGURED' || err.code === 'PROVIDER_UNAVAILABLE') {
+      status = 503;
+    } else if (err.code === 'AI_CONTEXT_UNAUTHORIZED') {
+      status = 403;
+    } else if (err.code === 'AI_CONTEXT_INVALID_SCOPE') {
+      status = 400;
+    } else if (err.code === 'RATE_LIMITED') {
+      status = 429;
+    } else if (err.code === 'TIMEOUT') {
+      status = 504;
+    } else if (err.code === 'INVALID_RESPONSE') {
+      status = 502;
+    }
+    res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
   }
 });
 

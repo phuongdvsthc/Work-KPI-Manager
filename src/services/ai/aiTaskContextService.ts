@@ -71,7 +71,9 @@ export const aiTaskContextService = {
          query = query.eq('id', 'forced-empty-id'); // fallback
        }
     } else if (scope.scopeType === 'system' || scope.scopeType === 'read_only_system') {
-       if (req.unitId) {
+       if (scope.unitIds && scope.unitIds.length > 0) {
+         query = query.in('organization_unit_id', scope.unitIds);
+       } else if (req.unitId) {
          query = query.eq('organization_unit_id', req.unitId);
        }
     }

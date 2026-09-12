@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Download, SlidersHorizontal, Calendar, Filter, RefreshCw, Loader2, Building2, Layers, BarChart2, Inbox, AlertCircle, Target, Activity, AlertTriangle, Lock, Clock, Award, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { LayoutDashboard, Download, SlidersHorizontal, Calendar, Filter, RefreshCw, Loader2, Building2, Layers, BarChart2, Inbox, AlertCircle, Target, Activity, AlertTriangle, Lock, Clock, Award, CheckCircle2, Sparkles } from 'lucide-react';
 import { kpiDashboardService } from '../../../services/kpiDashboardService';
 import { organizationService } from '../../../services/organizationService';
 import { KpiPeriod, KpiDashboardFilters, KpiDashboardUnitBreakdown, KpiDashboardKpiBreakdown, KpiDashboardSummary, KpiDashboardResultMode, KpiAssignmentStatus } from '../../../types/kpi';
@@ -12,9 +12,61 @@ import { KpiPortfolioTable } from "./KpiPortfolioTable";
 import { KpiStatusChart } from "./charts/KpiStatusChart";
 import { KpiUnitScoreChart } from "./charts/KpiUnitScoreChart";
 import { KpiPortfolioResultChart } from "./charts/KpiPortfolioResultChart";
+import { useAuth } from '../../../context/AuthContext';
+import { ExecutiveAIResultPanel } from '../../executive/ExecutiveAIResultPanel';
 
 export const KpiExecutiveDashboardView: React.FC = () => {
-  // --- 1. Periods & Filter State ---
+  // --- Auth & AI State ---
+  const { systemRole } = useAuth();
+  const [aiResult, setAiResult] = useState<any>(null);
+  const [aiLoading, setAiLoading] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const aiRequestIdRef = useRef(0);
+  const isUnmountedRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      isUnmountedRef.current = true;
+    };
+  }, []);
+
+  const handleGenerateOverview = async () => {
+    if (aiLoading) return;
+    const currentReqId = ++aiRequestIdRef.current;
+    setAiLoading(true);
+    setAiError(null);
+
+    const isUnitMode = Boolean(filters.unitId);
+    const featureKey = isUnitMode ? 'executive.unit_summary' : 'executive.overview';
+
+    try {
+      const res = await fetch('/api/ai/executive/overview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kpiPeriodId: filters.periodId || undefined,
+          unitId: filters.unitId || undefined,
+          featureKey
+        })
+      });
+
+      const data = await res.json();
+      if (isUnmountedRef.current || currentReqId !== aiRequestIdRef.current) return;
+
+      if (!res.ok) {
+        setAiError(data.error || 'Đã xảy ra lỗi khi tạo bản tin điều hành AI.');
+      } else {
+        setAiResult(data);
+      }
+    } catch (err: any) {
+      if (isUnmountedRef.current || currentReqId !== aiRequestIdRef.current) return;
+      setAiError(err.message || 'Lỗi kết nối khi gọi AI.');
+    } finally {
+      if (!isUnmountedRef.current && currentReqId === aiRequestIdRef.current) {
+        setAiLoading(false);
+      }
+    }
+  };
   
   const [isExporting, setIsExporting] = useState(false);
   const handleExport = async (format: 'xlsx' | 'csv') => {
@@ -159,19 +211,27 @@ export const KpiExecutiveDashboardView: React.FC = () => {
 
   const handlePeriodChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setFilters((prev) => ({ ...prev, periodId: e.target.value }));
+    setAiResult(null);
+    setAiError(null);
   };
 
   const handleUnitChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     setFilters((prev) => ({ ...prev, unitId: val === '' ? undefined : val }));
+    setAiResult(null);
+    setAiError(null);
   };
 
   const handleStatusChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setFilters((prev) => ({ ...prev, assignmentStatus: e.target.value as KpiAssignmentStatus | 'all' }));
+    setAiResult(null);
+    setAiError(null);
   };
 
   const handleResultModeChange = (mode: KpiDashboardResultMode) => {
     setFilters((prev) => ({ ...prev, resultMode: mode }));
+    setAiResult(null);
+    setAiError(null);
   };
 
 
@@ -376,6 +436,47 @@ export const KpiExecutiveDashboardView: React.FC = () => {
                   <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
                   <span className="text-sm font-semibold text-slate-700">Đang tải dữ liệu KPI...</span>
                </div>
+            </div>
+          )}
+
+          {/* EXECUTIVE AI OVERVIEW SECTION */}
+          {systemRole !== 'staff' && (
+            <div className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/50 via-white to-purple-50/30 p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-xs">
+                      <Sparkles className="h-4 w-4" />
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900">Trợ lý Điều hành AI (Executive Overview)</h3>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Tổng hợp thông tin điều hành tự động từ Báo cáo hằng ngày, Công việc và KPI toàn trường theo kỳ hiện tại.
+                  </p>
+                </div>
+                <button
+                  id="btn-generate-executive-overview"
+                  onClick={handleGenerateOverview}
+                  disabled={aiLoading || !filters.periodId}
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 transition-colors cursor-pointer shrink-0"
+                >
+                  {aiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  <span>{aiLoading ? 'Đang tổng hợp...' : (filters.unitId ? 'Tóm tắt đơn vị bằng AI' : 'Tạo bản tin điều hành bằng AI')}</span>
+                </button>
+              </div>
+
+              {(aiResult || aiLoading || aiError) && (
+                <ExecutiveAIResultPanel
+                  result={aiResult}
+                  isLoading={aiLoading}
+                  error={aiError}
+                  onDrillDownEvidence={(type, id, assignmentId) => {
+                    if (type === 'kpi' && assignmentId) {
+                      window.location.hash = `#/kpis/executive-dashboard/assignment/${assignmentId}`;
+                    }
+                  }}
+                />
+              )}
             </div>
           )}
 

@@ -11,7 +11,7 @@ const AI_CONTEXT_MAX_RECORDS = 50;
 export const aiContextService = {
   async buildContext(supabaseAdmin: any, req: AIContextRequest): Promise<AIContextData> {
     // 1. Resolve Authorization Scope
-    const { actor, scope } = await aiContextScopeService.resolve(supabaseAdmin, req.userId, req.unitId);
+    const { actor, scope } = await aiContextScopeService.resolve(supabaseAdmin, req.userId, req.unitId, req.scopeMode || 'unit_with_descendants');
 
     // 2. Validate Request
     if (req.entityIds && req.entityIds.length > 50) {

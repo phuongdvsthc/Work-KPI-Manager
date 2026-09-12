@@ -93,12 +93,16 @@ export const aiService = {
       throw e;
     }
 
-    const context_metadata = {
+    const context_metadata: Record<string, any> = {
       scope_type: req.context?.scope?.scopeType || 'unknown',
       unit_count: req.context?.scope?.unitIds?.length || 0,
       has_period: !!req.context?.request?.periodId,
-      truncated: req.context?.metadata?.truncated || false
+      truncated: req.context?.metadata?.truncated || false,
     };
+    if (req.context?.metadata?.issueCount !== undefined) context_metadata.issueCount = req.context.metadata.issueCount;
+    if (req.context?.metadata?.groupCount !== undefined) context_metadata.groupCount = req.context.metadata.groupCount;
+    if (req.context?.metadata?.followUpCount !== undefined) context_metadata.followUpCount = req.context.metadata.followUpCount;
+
 
     const audit = await aiAuditService.startRequest(supabaseAdmin, {
       user_id: req.userId,

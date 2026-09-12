@@ -61,7 +61,9 @@ export const aiKpiContextService = {
          query = query.eq('assignee_user_id', req.targetUserId);
       }
     } else if (scope.scopeType === 'system' || scope.scopeType === 'read_only_system') {
-       if (req.unitId) {
+       if (scope.unitIds && scope.unitIds.length > 0) {
+         query = query.or(`assignee_unit_id_snapshot.in.(${scope.unitIds.join(',')}),assignee_organization_unit_id.in.(${scope.unitIds.join(',')})`);
+       } else if (req.unitId) {
          query = query.or(`assignee_unit_id_snapshot.eq.${req.unitId},assignee_organization_unit_id.eq.${req.unitId}`);
        }
        if (req.targetUserId) {
