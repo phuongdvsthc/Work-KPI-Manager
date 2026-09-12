@@ -1,4 +1,5 @@
 import { kpiIntelligenceService } from './src/services/ai/kpiIntelligence.service';
+import { dashboardReportingService } from './src/services/dashboardReportingService';
 import { dailyReportIntelligenceService } from './src/services/ai/dailyReportIntelligence.service';
 import { resolveManagerScopeUnits } from './src/services/managerScopeService';
 import { applyAdvancedFiltersAndBatchResolve, resolveLiveScoresBatch, resolveOfficialScoresBatch } from './src/services/kpiDashboardResolver';
@@ -8047,6 +8048,55 @@ app.post('/api/ai/executive/unit-summary', authenticateUser, async (req: Request
       status = 502;
     }
     res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
+  }
+});
+
+app.get('/api/dashboard/reporting', authenticateUser, async (req: Request, res: Response) => {
+  try {
+    const supabaseAdmin = res.locals.supabaseAdmin;
+    const profile = res.locals.profile;
+    const user = {
+      id: res.locals.user.id,
+      role: profile?.system_role || 'staff',
+      is_active: profile?.is_active !== false
+    };
+
+    const allowedParams = new Set([
+      'date_from',
+      'date_to',
+      'organization_unit_id',
+      'employee_id',
+      'source_id',
+      'metric_id',
+      'kpi_id',
+      'status'
+    ]);
+
+    for (const key of Object.keys(req.query)) {
+      if (!allowedParams.has(key)) {
+        return res.status(400).json({ error: `Unknown or unsupported reporting parameter: "${key}".` });
+      }
+    }
+
+    const rawFilters = {
+      date_from: req.query.date_from as string,
+      date_to: req.query.date_to as string,
+      organization_unit_id: req.query.organization_unit_id as string,
+      employee_id: req.query.employee_id as string,
+      source_id: req.query.source_id as string,
+      metric_id: req.query.metric_id as string,
+      kpi_id: req.query.kpi_id as string,
+      status: req.query.status as string
+    };
+
+    const result = await dashboardReportingService.getUnifiedDashboard(supabaseAdmin, user, rawFilters);
+    res.json(result);
+  } catch (err: any) {
+    console.error('[API dashboard_reporting] Error:', err);
+    const status = err.status || 500;
+    res.status(status).json({
+      error: status === 500 ? 'Internal server error' : (err.message || 'Error executing dashboard reporting')
+    });
   }
 });
 

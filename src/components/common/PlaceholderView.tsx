@@ -34,6 +34,15 @@ interface TabMeta {
 }
 
 const TAB_CONFIGS: Record<Exclude<NavTabId, 'overview'>, TabMeta> = {
+  'staff-dashboard': {
+    title: 'Tổng quan công việc cá nhân',
+    badge: 'Đang hoạt động',
+    description: 'Bảng điều khiển cá nhân cho cán bộ giảng viên',
+    icon: FileText,
+    plannedFeatures: ['Tổng quan công việc', 'Báo cáo hằng ngày', 'Chỉ số', 'KPI'],
+    dbIntegration: 'getUnifiedDashboard',
+    readyForNextPhase: true
+  },
   'daily-reports': {
     title: 'Báo cáo hằng ngày',
     badge: 'Đang phát triển',

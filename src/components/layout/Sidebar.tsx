@@ -35,7 +35,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { systemSettingsService } from '../../services/system-settings.service';
 
-export type NavTabId = 'overview' | 'tasks' | 'metrics' | 'kpis' | 'reports' | 'daily-reports' | 'admin' | 'account/security';
+export type NavTabId = 'overview' | 'staff-dashboard' | 'tasks' | 'metrics' | 'kpis' | 'reports' | 'daily-reports' | 'admin' | 'account/security';
 
 interface SidebarProps {
   activeTab: NavTabId;

@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Sidebar, NavTabId } from './Sidebar';
 import { Header } from './Header';
 import { DashboardView } from '../dashboard/DashboardView';
+import { StaffDashboardView } from '../dashboard/StaffDashboardView';
 import { TaskList } from '../tasks/TaskList';
 import { MetricEntryView } from '../metrics/MetricEntryView';
 import { AdminLayout } from '../admin/AdminLayout';
@@ -24,6 +25,7 @@ export const AppLayout: React.FC = () => {
   // Sync tab with URL hash if present
   const getInitialTab = (): NavTabId => {
     const hash = window.location.hash.replace('#/', '').replace('#', '');
+    if (hash === 'staff-dashboard') return 'staff-dashboard';
     if (hash === 'metrics' || hash === 'metric') return 'metrics';
     if (hash === 'admin' || hash === 'admin/metrics') return 'admin';
     if (hash === 'tasks' || hash.startsWith('tasks/') || hash.startsWith('tasks?')) return 'tasks';
@@ -59,7 +61,8 @@ export const AppLayout: React.FC = () => {
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#/', '').replace('#', '');
-      if (hash === 'metrics' || hash === 'metric') setActiveTab('metrics');
+      if (hash === 'staff-dashboard') setActiveTab('staff-dashboard');
+      else if (hash === 'metrics' || hash === 'metric') setActiveTab('metrics');
       else if (hash === 'admin' || hash === 'admin/metrics' || hash.startsWith('admin/')) setActiveTab('admin');
       else if (hash === 'tasks' || hash.startsWith('tasks/') || hash.startsWith('tasks?')) setActiveTab('tasks');
       else if (hash === 'kpis' || hash.startsWith('kpis/')) setActiveTab('kpis');
@@ -129,7 +132,9 @@ export const AppLayout: React.FC = () => {
 
         <main id="main-content-viewport" className="flex-1 p-4 sm:p-6 lg:p-8">
           <div className="mx-auto max-w-7xl">
-            {safeTab === 'overview' ? (
+            {safeTab === 'staff-dashboard' || (safeTab === 'overview' && systemRole === 'staff') ? (
+              <StaffDashboardView />
+            ) : safeTab === 'overview' ? (
               <DashboardView onNavigateTab={handleSelectTab} />
             ) : safeTab === 'tasks' ? (
               <TaskList />
